@@ -9,9 +9,8 @@ from networks.network import LLL_Net
 from .incremental_learning import Inc_Learning_Appr
 from datasets.exemplars_dataset import ExemplarsDataset
 
-from distill_approach.ERF import ERF_Distillation
-
-
+from distill_approach.ERF import ERF
+from distill_approach.RGR import RGR
 
 class Appr(Inc_Learning_Appr):
     """Class implementing the Learning without Memorizing (LwM) approach
@@ -20,11 +19,11 @@ class Appr(Inc_Learning_Appr):
 
     def __init__(self, model, device, nepochs=100, lr=0.05, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
                  momentum=0, wd=0, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False, eval_on_train=False,
-                 logger=None, exemplars_dataset=None, beta=1.0, gamma=1.0, gradcam_layer='layer3',
+                 logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, beta=1.0, gamma=1.0, gradcam_layer='layer3',
                  log_gradcam_samples=0):
         super(Appr, self).__init__(model, device, nepochs, lr, lr_min, lr_factor, lr_patience, clipgrad, momentum, wd,
                                    multi_softmax, wu_nepochs, wu_lr_factor, fix_bn, eval_on_train, logger,
-                                   exemplars_dataset)
+                                   exemplars_dataset, erf_approach, rgr_approach)
         self.beta = beta
         self.gamma = gamma
         self.gradcam_layer = gradcam_layer
@@ -92,8 +91,8 @@ class Appr(Inc_Learning_Appr):
 
     def train_loop(self, t, trn_loader, val_loader, distill_approach):
         """Contains the epochs loop"""
-        self.distill = Distillation(train_epochs=self.nepochs, distill_approach=distill_approach)
-        self.kd_loss_memory = []
+        self.erf = ERF()
+        self.rgr = RGR()
 
         # add exemplars to train_loader
         if len(self.exemplars_dataset) > 0 and t > 0:

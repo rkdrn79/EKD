@@ -5,7 +5,8 @@ from argparse import ArgumentParser
 from .incremental_learning import Inc_Learning_Appr
 from datasets.exemplars_dataset import ExemplarsDataset
 
-from distill_approach.ERF import ERF_Distillation
+from distill_approach.ERF import ERF
+from distill_approach.RGR import RGR
 
 class Appr(Inc_Learning_Appr):
     """Class implementing the Learning Without Forgetting (LwF) approach
@@ -17,10 +18,10 @@ class Appr(Inc_Learning_Appr):
     #  method or the compared Less Forgetting Learning (see Table 2(b))."
     def __init__(self, model, device, nepochs=100, lr=0.05, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
                  momentum=0, wd=0, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False, eval_on_train=False,
-                 logger=None, exemplars_dataset=None, lamb=1, T=2):
+                 logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, lamb=1, T=2):
         super(Appr, self).__init__(model, device, nepochs, lr, lr_min, lr_factor, lr_patience, clipgrad, momentum, wd,
                                    multi_softmax, wu_nepochs, wu_lr_factor, fix_bn, eval_on_train, logger,
-                                   exemplars_dataset)
+                                   exemplars_dataset, erf_approach, rgr_approach)
         self.model_old = None
         self.lamb = lamb
         self.T = T
@@ -53,10 +54,8 @@ class Appr(Inc_Learning_Appr):
             params = self.model.parameters()
         return torch.optim.SGD(params, lr=self.lr, weight_decay=self.wd, momentum=self.momentum)
 
-    def train_loop(self, t, trn_loader, val_loader, tst_loader, distill_approach, memory_loss_use):
+    def train_loop(self, t, trn_loader, val_loader, tst_loader):
         """Contains the epochs loop"""
-        self.distill = Distillation(train_epochs=self.nepochs, distill_approach=distill_approach, memory_loss_use = memory_loss_use)
-        self.kd_loss_memory = []
 
         # add exemplars to train_loaderdistill_approach
         if len(self.exemplars_dataset) > 0 and t > 0:
@@ -67,7 +66,7 @@ class Appr(Inc_Learning_Appr):
                                                      pin_memory=trn_loader.pin_memory)
 
         # FINETUNING TRAINING -- contains the epochs loop
-        super().train_loop(t, trn_loader, val_loader, tst_loader, distill_approach, memory_loss_use)
+        super().train_loop(t, trn_loader, val_loader, tst_loader)
 
         # EXEMPLAR MANAGEMENT -- select training subset
         self.exemplars_dataset.collect_exemplars(self.model, trn_loader, val_loader.dataset.transform)
@@ -82,18 +81,20 @@ class Appr(Inc_Learning_Appr):
 
     def train_epoch(self, t, trn_loader, e):
         """Runs a single epoch"""
+        erf_kd_use = self.erf._get_distill_use(e)
+        rgr_kd_use = self.rgr._get_distill_use(e)
+
         self.model.train()
-        kd, weight, memory_weight = self.distill.loss(e)
         if self.fix_bn and t > 0:
             self.model.freeze_bn()
         for images, targets in trn_loader:
             # Forward old model
             targets_old = None
-            if t > 0 and kd == True:
+            if t > 0 and erf_kd_use: 
                 targets_old = self.model_old(images.to(self.device))
             # Forward current model
             outputs = self.model(images.to(self.device))
-            loss = self.criterion(t, outputs, targets.to(self.device), outputs_old = targets_old, kd = kd, weight = weight, memory_weight = memory_weight)
+            loss = self.criterion(t, outputs, targets.to(self.device), outputs_old = targets_old, epoch = e, erf_kd_use = erf_kd_use, rgr_kd_use = rgr_kd_use)
             # Backward
             self.optimizer.zero_grad()
             loss.backward()
@@ -137,19 +138,27 @@ class Appr(Inc_Learning_Appr):
             ce = ce.mean()
         return ce
 
-    def criterion(self, t, outputs, targets, outputs_old=None, kd = False, weight = 1, memory_weight = 0):
+    def criterion(self, t, outputs, targets, outputs_old=None, epoch = None, erf_kd_use=False, rgr_kd_use=False):
         """Returns the loss value"""
         loss = 0
-        if t > 0 and kd == True:
-            # Knowledge distillation loss for all previous tasks
+        # loss for current task
+        if len(self.exemplars_dataset) > 0:
+            loss += torch.nn.functional.cross_entropy(torch.cat(outputs, dim=1), targets)
+        else:
+            loss += torch.nn.functional.cross_entropy(outputs[t], targets - self.model.task_offset[t])
+        
+        # Knowledge distillation loss for all previous tasks
+        if t > 0 and erf_kd_use:
             kd_loss = self.cross_entropy(torch.cat(outputs[:t], dim=1),
                                                    torch.cat(outputs_old[:t], dim=1), exp=1.0 / self.T)
-            self.kd_loss_memory.append(kd_loss.detach().clone().requires_grad_(True))
+            weight = self.erf._get_distill_weight(epoch, total_loss=loss.item(), kd_loss=kd_loss.item())
             loss += weight * self.lamb * kd_loss
 
-        elif t > 0 and kd == False and len(self.kd_loss_memory) > 0:
-            loss += memory_weight * self.lamb * self.kd_loss_memory[-1]
-        # Current cross-entropy loss -- with exemplars use all heads
-        if len(self.exemplars_dataset) > 0:
-            return loss + torch.nn.functional.cross_entropy(torch.cat(outputs, dim=1), targets)
-        return loss + torch.nn.functional.cross_entropy(outputs[t], targets - self.model.task_offset[t])
+            if self.rgr_approach != 'none':
+                self.rgr._save_ema(kd_loss, optimizer = self.optimizer, model = self.model)
+
+        # ema loss use
+        if t > 0 and rgr_kd_use:
+            self.model = self.rgr._get_ema(epoch, self.model)
+    
+        return loss

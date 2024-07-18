@@ -18,6 +18,9 @@ from networks import tvmodels, allmodels, set_tvmodel_head_var
 import wandb
 import datetime
 
+import warnings
+warnings.filterwarnings("ignore")
+
 def main(argv=None):
     tstart = time.time()
     # Arguments
@@ -95,11 +98,12 @@ def main(argv=None):
                         help='Show train loss and accuracy (default=%(default)s)')
     
     # distill approcah args
-    parser.add_argument('--distill-approach', default='every', type=str, required=False,
-                        help='Distill approach used (default=%(default)s)')
-    parser.add_argument('--memory-loss-use', default='none', type=str, required=False,
-                        help='Memory approach used (default=%(default)s)')
+    parser.add_argument('--erf-approach', default='every', type=str, required=False,
+                        help='ERF Distill approach used (default=%(default)s)')
+    parser.add_argument('--rgr-approach', default='none', type=str, required=False,
+                        help='RGR Distill approach used (default=%(default)s)')
 
+    
     # gridsearch args
     parser.add_argument('--gridsearch-tasks', default=-1, type=int,
                         help='Number of tasks to apply GridSearch (-1: all tasks) (default=%(default)s)')
@@ -110,7 +114,8 @@ def main(argv=None):
     base_kwargs = dict(nepochs=args.nepochs, lr=args.lr, lr_min=args.lr_min, lr_factor=args.lr_factor,
                        lr_patience=args.lr_patience, clipgrad=args.clipping, momentum=args.momentum,
                        wd=args.weight_decay, multi_softmax=args.multi_softmax, wu_nepochs=args.warmup_nepochs,
-                       wu_lr_factor=args.warmup_lr_factor, fix_bn=args.fix_bn, eval_on_train=args.eval_on_train)
+                       wu_lr_factor=args.warmup_lr_factor, fix_bn=args.fix_bn, eval_on_train=args.eval_on_train,
+                       erf_approach = args.erf_approach, rgr_approach = args.rgr_approach)
 
     if args.no_cudnn_deterministic:
         print('WARNING: CUDNN Deterministic will be disabled.')
@@ -190,7 +195,7 @@ def main(argv=None):
     ####################################################################################################################
     # Log all arguments
     full_exp_name = reduce((lambda x, y: x[0] + y[0]), args.datasets) if len(args.datasets) > 0 else args.datasets[0]
-    full_exp_name += '_' + args.approach + '_' + args.distill_approach + '_' + args.memory_loss_use
+    full_exp_name += '_distill:' + args.approach + ' _erf:' + args.erf_approach + ' _rgr:' + args.rgr_approach
     if args.exp_name is not None:
         full_exp_name += '_' + args.exp_name
     logger = MultiLogger(args.results_path, full_exp_name, loggers=args.log, save_models=args.save_models)
@@ -276,7 +281,7 @@ def main(argv=None):
             print('-' * 108)
 
         # Train
-        appr.train(t, trn_loader[t], val_loader[t], tst_loader, args.distill_approach, args.memory_loss_use)
+        appr.train(t, trn_loader[t], val_loader[t], tst_loader)
         print('-' * 108)
 
         # Test
@@ -321,6 +326,7 @@ def main(argv=None):
             weights, biases = last_layer_analysis(net.heads, t, taskcla, y_lim=True, sort_weights=True)
             logger.log_figure(name='weights', iter=t, figure=weights)
             logger.log_figure(name='bias', iter=t, figure=biases)
+            
     # Print Summary
     wandb.finish()
     utils.print_summary(acc_taw, acc_tag, forg_taw, forg_tag)

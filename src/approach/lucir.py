@@ -23,11 +23,12 @@ class Appr(Inc_Learning_Appr):
     # samples for each old class (e.g. R_per=20) (...) we adopt the first strategy"
     def __init__(self, model, device, nepochs=160, lr=0.1, lr_min=1e-4, lr_factor=10, lr_patience=8, clipgrad=10000,
                  momentum=0.9, wd=5e-4, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False,
-                 eval_on_train=False, logger=None, exemplars_dataset=None, lamb=5., lamb_mr=1., dist=0.5, K=2,
+                 eval_on_train=False, logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, lamb=5., lamb_mr=1., dist=0.5, K=2,
                  remove_less_forget=False, remove_margin_ranking=False, remove_adapt_lamda=False):
         super(Appr, self).__init__(model, device, nepochs, lr, lr_min, lr_factor, lr_patience, clipgrad, momentum, wd,
                                    multi_softmax, wu_nepochs, wu_lr_factor, fix_bn, eval_on_train, logger,
-                                   exemplars_dataset)
+                                   exemplars_dataset, erf_approach, rgr_approach)
+        
         self.lamb = lamb
         self.lamb_mr = lamb_mr
         self.dist = dist

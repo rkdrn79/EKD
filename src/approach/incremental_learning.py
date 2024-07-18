@@ -5,7 +5,8 @@ from argparse import ArgumentParser
 
 from loggers.exp_logger import ExperimentLogger
 from datasets.exemplars_dataset import ExemplarsDataset
-from distill_approach.ERF import ERF_Distillation
+from distill_approach.ERF import ERF
+from distill_approach.RGR import RGR
 import wandb
 
 class Inc_Learning_Appr:
@@ -13,7 +14,9 @@ class Inc_Learning_Appr:
 
     def __init__(self, model, device, nepochs=100, lr=0.05, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
                  momentum=0, wd=0, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False,
-                 eval_on_train=False, logger: ExperimentLogger = None, exemplars_dataset: ExemplarsDataset = None):
+                 eval_on_train=False, logger: ExperimentLogger = None, exemplars_dataset: ExemplarsDataset = None,
+                 erf_approach: ERF = None, rgr_approach: RGR = None
+                 ):
         self.model = model
         self.device = device
         self.nepochs = nepochs
@@ -33,6 +36,11 @@ class Inc_Learning_Appr:
         self.fix_bn = fix_bn
         self.eval_on_train = eval_on_train
         self.optimizer = None
+        self.erf_approach = erf_approach
+        self.rgr_approach = rgr_approach
+
+        self.erf = ERF(erf_approach = self.erf_approach, train_epochs = self.nepochs)
+        self.rgr = RGR(rgr_approach = self.rgr_approach, train_epochs = self.nepochs, erf_distill_cycle = self.erf.erf_distill_cycle)
 
     @staticmethod
     def extra_parser(args):
@@ -51,10 +59,10 @@ class Inc_Learning_Appr:
         """Returns the optimizer"""
         return torch.optim.SGD(self.model.parameters(), lr=self.lr, weight_decay=self.wd, momentum=self.momentum)
 
-    def train(self, t, trn_loader, val_loader, tst_loader, distill_approach, memory_loss_use):
+    def train(self, t, trn_loader, val_loader, tst_loader):
         """Main train structure"""
         self.pre_train_process(t, trn_loader)
-        self.train_loop(t, trn_loader, val_loader, tst_loader, distill_approach, memory_loss_use)
+        self.train_loop(t, trn_loader, val_loader, tst_loader)
         self.post_train_process(t, trn_loader)
 
     def pre_train_process(self, t, trn_loader):
@@ -96,17 +104,14 @@ class Inc_Learning_Appr:
                 self.logger.log_scalar(task=t, iter=e + 1, name="loss", value=trn_loss, group="warmup")
                 self.logger.log_scalar(task=t, iter=e + 1, name="acc", value=100 * trn_acc, group="warmup")
 
-    def train_loop(self, t, trn_loader, val_loader, tst_loader, distill_approach, memory_loss_use):
+    def train_loop(self, t, trn_loader, val_loader, tst_loader):
         """Contains the epochs loop"""
         lr = self.lr
         best_loss = np.inf
         patience = self.lr_patience
         best_model = self.model.get_copy()
         self.optimizer = self._get_optimizer()
-        self.distill = Distillation(train_epochs=self.nepochs, distill_approach=distill_approach, memory_loss_use = memory_loss_use)
-        self.kd_loss_memory = []
-
-        tst = True
+        self.rgr._reset_eam(t)
 
         # Loop epochs
         for e in range(self.nepochs):
@@ -114,16 +119,17 @@ class Inc_Learning_Appr:
             clock0 = time.time()
             self.train_epoch(t, trn_loader, e)
             clock1 = time.time()
+
             if self.eval_on_train:
                 train_loss, train_acc, _ = self.eval(t, trn_loader)
                 clock2 = time.time()
-                kd, weight, memory_weight = self.distill.loss(e)
-                memory_use = memory_weight > 0
+                erf_kd_use = self.erf._get_distill_use(e)
+                rgr_kd_use = self.rgr._get_distill_use(e)
                 if t == 0:
-                    kd = False
-                    memory_use = False
-                print('| Epoch {:3d}, time={:5.1f}s/{:5.1f}s | Train: loss={:.3f}, TAw acc={:5.1f}%  | KD : {} , Memory Use : {}|'.format(
-                    e + 1, clock1 - clock0, clock2 - clock1, train_loss, 100 * train_acc, kd, memory_use), end='')
+                    erf_kd_use = False
+                    rgr_kd_use = False
+                print('| Epoch {:3d}, time={:5.1f}s/{:5.1f}s | Train: loss={:.3f}, TAw acc={:5.1f}%  | ERF KD : {} , RGR KD : {}|'.format(
+                    e + 1, clock1 - clock0, clock2 - clock1, train_loss, 100 * train_acc, erf_kd_use, rgr_kd_use), end='')
                 self.logger.log_scalar(task=t, iter=e + 1, name="loss", value=train_loss, group="train")
                 self.logger.log_scalar(task=t, iter=e + 1, name="acc", value=100 * train_acc, group="train")
                 wandb.log({"task "+ str(t) +" train_loss": train_loss, "task "+ str(t) +" train_acc": 100 * train_acc})
@@ -140,7 +146,7 @@ class Inc_Learning_Appr:
             self.logger.log_scalar(task=t, iter=e + 1, name="acc", value=100 * valid_acc, group="valid")
             wandb.log({"task "+ str(t) +" valid_loss": valid_loss, "task "+ str(t) +" valid_acc": 100 * valid_acc})
 
-            if tst == True and t > 0:
+            if self.eval_on_train and t > 0:
                 # Test
                 for u in range(t):
                     test_loss, test_acc_taw, test_acc_tag = self.eval(u, tst_loader[u])
@@ -154,6 +160,7 @@ class Inc_Learning_Appr:
                 best_model = self.model.get_copy()
                 patience = self.lr_patience
                 print(' *', end='')
+
             else:
                 # if the loss does not go down, decrease patience
                 patience -= 1
@@ -172,6 +179,7 @@ class Inc_Learning_Appr:
             self.logger.log_scalar(task=t, iter=e + 1, name="patience", value=patience, group="train")
             self.logger.log_scalar(task=t, iter=e + 1, name="lr", value=lr, group="train")
             print()
+            
         self.model.set_state_dict(best_model)
 
     def post_train_process(self, t, trn_loader):
@@ -186,8 +194,7 @@ class Inc_Learning_Appr:
         for images, targets in trn_loader:
             # Forward current model
             outputs = self.model(images.to(self.device))
-            kd, weight, memory_weight = self.distill.loss(e)
-            loss = self.criterion(t, outputs, targets.to(self.device), kd = kd, weight = weight, memory_weight = memory_weight)
+            loss = self.criterion(t, outputs, targets.to(self.device), e)
             # Backward
             self.optimizer.zero_grad()
             loss.backward()
@@ -228,6 +235,6 @@ class Inc_Learning_Appr:
         hits_tag = (pred == targets.to(self.device)).float()
         return hits_taw, hits_tag
 
-    def criterion(self, t, outputs, targets, kd = False, weight = 1, memory_weight = 0):
+    def criterion(self, t, outputs, targets, e):
         """Returns the loss value"""
         return torch.nn.functional.cross_entropy(outputs[t], targets - self.model.task_offset[t])
