@@ -9,8 +9,7 @@ from networks.network import LLL_Net
 from .incremental_learning import Inc_Learning_Appr
 from datasets.exemplars_dataset import ExemplarsDataset
 
-from distill_approach.ERF import ERF
-from distill_approach.RGR import RGR
+import wandb
 
 class Appr(Inc_Learning_Appr):
     """Class implementing the Learning without Memorizing (LwM) approach
@@ -19,11 +18,11 @@ class Appr(Inc_Learning_Appr):
 
     def __init__(self, model, device, nepochs=100, lr=0.05, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
                  momentum=0, wd=0, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False, eval_on_train=False,
-                 logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, beta=1.0, gamma=1.0, gradcam_layer='layer3',
-                 log_gradcam_samples=0):
+                 logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, erf_m = 1, rgr_m = 1, cycle_approach = 'all', 
+                 beta=1.0, gamma=1.0, gradcam_layer='layer3', log_gradcam_samples=0):
         super(Appr, self).__init__(model, device, nepochs, lr, lr_min, lr_factor, lr_patience, clipgrad, momentum, wd,
                                    multi_softmax, wu_nepochs, wu_lr_factor, fix_bn, eval_on_train, logger,
-                                   exemplars_dataset, erf_approach, rgr_approach)
+                                   exemplars_dataset, erf_approach, rgr_approach, erf_m, rgr_m, cycle_approach)
         self.beta = beta
         self.gamma = gamma
         self.gradcam_layer = gradcam_layer
@@ -89,11 +88,8 @@ class Appr(Inc_Learning_Appr):
                 X_with_gradcam.append(torch.cat(img_with_heatmaps))
         save_image(torch.cat(X_with_gradcam), output_map_filename, nrow=(t + 1))
 
-    def train_loop(self, t, trn_loader, val_loader, distill_approach):
+    def train_loop(self, t, trn_loader, val_loader, tst_loader):
         """Contains the epochs loop"""
-        self.erf = ERF()
-        self.rgr = RGR()
-
         # add exemplars to train_loader
         if len(self.exemplars_dataset) > 0 and t > 0:
             trn_loader = torch.utils.data.DataLoader(trn_loader.dataset + self.exemplars_dataset,
@@ -103,7 +99,7 @@ class Appr(Inc_Learning_Appr):
                                                      pin_memory=trn_loader.pin_memory)
 
         # FINETUNING TRAINING -- contains the epochs loop
-        super().train_loop(t, trn_loader, val_loader, distill_approach)
+        super().train_loop(t, trn_loader, val_loader, tst_loader)
 
         # EXEMPLAR MANAGEMENT -- select training subset
         self.exemplars_dataset.collect_exemplars(self.model, trn_loader, val_loader.dataset.transform)
@@ -116,28 +112,59 @@ class Appr(Inc_Learning_Appr):
 
     def train_epoch(self, t, trn_loader, e):
         """Runs a single epoch"""
+        erf_kd_use, rgr_kd_use = self.cycle._get_distill_use(e)
+
+        total_num = 0
+
+        total_total_loss = 0
+        total_train_loss = 0
+        total_kd_loss = 0
+        total_weight = 0
+
         if self.model_old is None:  # First task only
-            return super().train_epoch(t, trn_loader)
+            return super().train_epoch(t, trn_loader, e)
         if self.fix_bn and t > 0:
             self.model.freeze_bn()
         # Do training with distillation losses
         with GradCAM(self.model_old, self.gradcam_layer) as gradcam_old:
             for images, targets in trn_loader:
                 images = images.to(self.device)
+
                 # Forward old model
-                attmap_old, outputs_old = gradcam_old(images, return_outputs=True)
-                with GradCAM(self.model, self.gradcam_layer) as gradcam:
-                    attmap = gradcam(images)  # this use eval() pass
+                attmap_old = None
+                outputs_old = None
+                attmap = None 
+                if t > 0 and erf_kd_use:
+                    attmap_old, outputs_old = gradcam_old(images, return_outputs=True)
+                    with GradCAM(self.model, self.gradcam_layer) as gradcam:
+                        attmap = gradcam(images)  # this use eval() pass
+
                 self.model.zero_grad()
                 self.model.train()
                 outputs = self.model(images)  # this use train() pass
-                loss = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old)
+                total_loss, train_loss, kd_loss, weight = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old, epoch = e, erf_kd_use = erf_kd_use, rgr_kd_use = rgr_kd_use)
                 # Backward
                 self.optimizer.zero_grad()
-                loss.backward()
+                total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.clipgrad)
                 self.optimizer.step()
+
+                #================= Log =================#
+                total_num += 1
+                total_total_loss += total_loss.item()
+                total_train_loss += train_loss.item()
+                if t > 0 and erf_kd_use:
+                    total_kd_loss += kd_loss.item()
+                    total_weight += weight
+
+            print("| Epoch: ", e + 1, "Loss: ", total_total_loss / total_num, "Train Loss: ", total_train_loss / total_num, "KD Loss: ", total_kd_loss / total_num, "KD Weight: ", total_weight / total_num)
+            # Log wandb task t
+            wandb.log({"epoch": e,
+                    "task {} Traing total_loss".format(t): total_total_loss / total_num,
+                    "task {} Traing train_loss".format(t): total_train_loss / total_num, 
+                    "task {} Traing kd_loss".format(t): total_kd_loss / total_num, 
+                    "task {} Traing kd_weight".format(t): total_weight / total_num})
 
     def eval(self, t, val_loader):
         """Contains the evaluation code"""
@@ -153,7 +180,7 @@ class Appr(Inc_Learning_Appr):
                 attmap_old, outputs_old = gradcam_old(images, return_outputs=True)
                 # Forward current model
                 attmap, outputs = gradcam(images, return_outputs=True)
-                loss = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old)
+                loss,_,_,_ = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old)
                 hits_taw, hits_tag = self.calculate_metrics(outputs, targets)
                 # Log
                 total_loss += loss.item() * len(targets)
@@ -184,20 +211,34 @@ class Appr(Inc_Learning_Appr):
             ce = ce.mean()
         return ce
 
-    def criterion(self, t, outputs, targets, outputs_old=None, attmap=None, attmap_old=None):
+    def criterion(self, t, outputs, targets, outputs_old=None, attmap=None, attmap_old=None, epoch = None, erf_kd_use=False, rgr_kd_use=False):
         """Returns the loss value"""
+        total_loss = 0
+        train_loss = 0
+        kd_loss = 0
+        weight = 0
+
         loss = 0
-        if t > 0 and outputs_old is not None:
+        if t > 0 and outputs_old is not None and erf_kd_use:
             # Knowledge distillation loss for all previous tasks
-            loss += self.beta * self.cross_entropy(torch.cat(outputs[:t], dim=1),
+            kd_loss += self.beta * self.cross_entropy(torch.cat(outputs[:t], dim=1),
                                                    torch.cat(outputs_old[:t], dim=1), exp=1.0 / 2.0)
         # Attention Distillation loss
-        if attmap is not None and attmap_old is not None:
-            loss += self.gamma * self.attention_distillation_loss(attmap, attmap_old)
+        if attmap is not None and attmap_old is not None and erf_kd_use:
+            kd_loss += self.gamma * self.attention_distillation_loss(attmap, attmap_old)
+    
         # Current cross-entropy loss -- with exemplars use all heads
         if len(self.exemplars_dataset) > 0:
-            return loss + torch.nn.functional.cross_entropy(torch.cat(outputs, dim=1), targets)
-        return loss + torch.nn.functional.cross_entropy(outputs[t], targets - self.model.task_offset[t])
+            train_loss = torch.nn.functional.cross_entropy(torch.cat(outputs, dim=1), targets)
+        else:
+            train_loss = torch.nn.functional.cross_entropy(outputs[t], targets - self.model.task_offset[t])
+
+        if t > 0 and erf_kd_use:    
+            weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item())
+            kd_loss *= weight
+
+        total_loss = train_loss + kd_loss
+        return total_loss, train_loss, kd_loss, weight
 
 
 class GradCAM:

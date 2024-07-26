@@ -7,6 +7,8 @@ from loggers.exp_logger import ExperimentLogger
 from datasets.exemplars_dataset import ExemplarsDataset
 from distill_approach.ERF import ERF
 from distill_approach.RGR import RGR
+from distill_approach.CYCLE import CYCLE
+
 import wandb
 
 class Inc_Learning_Appr:
@@ -15,8 +17,7 @@ class Inc_Learning_Appr:
     def __init__(self, model, device, nepochs=100, lr=0.05, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
                  momentum=0, wd=0, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False,
                  eval_on_train=False, logger: ExperimentLogger = None, exemplars_dataset: ExemplarsDataset = None,
-                 erf_approach: ERF = None, rgr_approach: RGR = None
-                 ):
+                 erf_approach: ERF = None, rgr_approach: RGR = None, erf_m = 1, rgr_m = 1, cycle_approach = 'all'):
         self.model = model
         self.device = device
         self.nepochs = nepochs
@@ -38,9 +39,13 @@ class Inc_Learning_Appr:
         self.optimizer = None
         self.erf_approach = erf_approach
         self.rgr_approach = rgr_approach
+        self.erf_m = erf_m
+        self.rgr_m = rgr_m
+        self.cycle_approach = cycle_approach
 
-        self.erf = ERF(erf_approach = self.erf_approach, train_epochs = self.nepochs)
-        self.rgr = RGR(rgr_approach = self.rgr_approach, train_epochs = self.nepochs, erf_distill_cycle = self.erf.erf_distill_cycle)
+        self.erf = ERF(erf_approach = self.erf_approach, m = self.erf_m)
+        self.rgr = RGR(rgr_approach = self.rgr_approach, m = self.rgr_m)
+        self.cycle = CYCLE(cycle_approach = self.cycle_approach, train_epochs = self.nepochs)
 
     @staticmethod
     def extra_parser(args):
@@ -121,37 +126,47 @@ class Inc_Learning_Appr:
             clock1 = time.time()
 
             if self.eval_on_train:
-                train_loss, train_acc, _ = self.eval(t, trn_loader)
+                total_loss, train_acc, _ = self.eval(t, trn_loader)
                 clock2 = time.time()
-                erf_kd_use = self.erf._get_distill_use(e)
-                rgr_kd_use = self.rgr._get_distill_use(e)
+
+                erf_kd_use, rgr_kd_use = self.cycle._get_distill_use(e)
                 if t == 0:
                     erf_kd_use = False
                     rgr_kd_use = False
-                print('| Epoch {:3d}, time={:5.1f}s/{:5.1f}s | Train: loss={:.3f}, TAw acc={:5.1f}%  | ERF KD : {} , RGR KD : {}|'.format(
-                    e + 1, clock1 - clock0, clock2 - clock1, train_loss, 100 * train_acc, erf_kd_use, rgr_kd_use), end='')
-                self.logger.log_scalar(task=t, iter=e + 1, name="loss", value=train_loss, group="train")
+                    
+                print('| Epoch {:3d}, time={:5.1f}s/{:5.1f}s | Train: total loss={:.3f}, TAw acc={:5.1f}%  | ERF KD : {} , RGR KD : {}|'.format(
+                    e + 1, clock1 - clock0, clock2 - clock1, total_loss, 100 * train_acc, erf_kd_use, rgr_kd_use), end='')
+                
+                self.logger.log_scalar(task=t, iter=e + 1, name="loss", value=total_loss, group="train")
                 self.logger.log_scalar(task=t, iter=e + 1, name="acc", value=100 * train_acc, group="train")
-                wandb.log({"task "+ str(t) +" train_loss": train_loss, "task "+ str(t) +" train_acc": 100 * train_acc})
+
+                wandb.log({"epoch" : e,
+                    "task "+ str(t) +" total_loss": total_loss,
+                    "task "+ str(t) +" train_acc": 100 * train_acc})
+
             else:
-                print('| Epoch {:3d}, time={:5.1f}s | Train: skip eval |'.format(e + 1, clock1 - clock0), end='')
+                print('| Epoch {:3d}, time={:5.1f}s | Train: skip eval |'.format(e + 1, clock1 - clock0))
 
             # Valid
             clock3 = time.time()
             valid_loss, valid_acc, _ = self.eval(t, val_loader)
             clock4 = time.time()
             print(' Valid: time={:5.1f}s loss={:.3f}, TAw acc={:5.1f}% |'.format(
-                clock4 - clock3, valid_loss, 100 * valid_acc), end='')
+                clock4 - clock3, valid_loss, 100 * valid_acc))
             self.logger.log_scalar(task=t, iter=e + 1, name="loss", value=valid_loss, group="valid")
             self.logger.log_scalar(task=t, iter=e + 1, name="acc", value=100 * valid_acc, group="valid")
-            wandb.log({"task "+ str(t) +" valid_loss": valid_loss, "task "+ str(t) +" valid_acc": 100 * valid_acc})
+            wandb.log({"epoch" : e ,
+                        "task "+ str(t) +" valid_loss": valid_loss, 
+                       "task "+ str(t) +" valid_acc": 100 * valid_acc})
 
             if self.eval_on_train and t > 0:
                 # Test
                 for u in range(t):
                     test_loss, test_acc_taw, test_acc_tag = self.eval(u, tst_loader[u])
-                    print('\n Epoch : {}, train task {}, test_acc_taw {}, test_acc_tag {}'.format(e+1, u, test_acc_taw, test_acc_tag))
-                    wandb.log({"train "+str(t)+" task"+ str(u) +" test_acc_taw": test_acc_taw, "train"+str(t)+" task"+ str(u) +" test_acc_tag": test_acc_tag})
+                    print('| Epoch : {}, train task {}, test_acc_taw {}, test_acc_tag {}'.format(e+1, u, test_acc_taw, test_acc_tag))
+                    wandb.log({"epoch" : e ,
+                        "train "+str(t)+" task"+ str(u) +" test_acc_taw": test_acc_taw, 
+                        "train"+str(t)+" task"+ str(u) +" test_acc_tag": test_acc_tag})
 
             # Adapt learning rate - patience scheme - early stopping regularization
             if valid_loss < best_loss:
@@ -194,10 +209,10 @@ class Inc_Learning_Appr:
         for images, targets in trn_loader:
             # Forward current model
             outputs = self.model(images.to(self.device))
-            loss = self.criterion(t, outputs, targets.to(self.device), e)
+            total_loss, train_loss, kd_loss, weight = self.criterion(t, outputs, targets.to(self.device), e)
             # Backward
             self.optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clipgrad)
             self.optimizer.step()
 
@@ -209,13 +224,14 @@ class Inc_Learning_Appr:
             for images, targets in val_loader:
                 # Forward current model
                 outputs = self.model(images.to(self.device))
-                loss = self.criterion(t, outputs, targets.to(self.device))
+                loss,_,_,_= self.criterion(t, outputs, targets.to(self.device))
                 hits_taw, hits_tag = self.calculate_metrics(outputs, targets)
                 # Log
                 total_loss += loss.item() * len(targets)
                 total_acc_taw += hits_taw.sum().item()
                 total_acc_tag += hits_tag.sum().item()
                 total_num += len(targets)
+
         return total_loss / total_num, total_acc_taw / total_num, total_acc_tag / total_num
 
     def calculate_metrics(self, outputs, targets):

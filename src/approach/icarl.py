@@ -9,7 +9,7 @@ from .incremental_learning import Inc_Learning_Appr
 from datasets.exemplars_dataset import ExemplarsDataset
 from datasets.exemplars_selection import override_dataset_transform
 
-from distill_approach.ERF import ERF_Distillation
+import wandb
 
 
 class Appr(Inc_Learning_Appr):
@@ -20,10 +20,10 @@ class Appr(Inc_Learning_Appr):
 
     def __init__(self, model, device, nepochs=60, lr=0.5, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
                  momentum=0.9, wd=1e-5, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False,
-                 eval_on_train=False, logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, lamb=1):
+                 eval_on_train=False, logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, erf_m = 1, rgr_m = 1, cycle_approach = 'all', lamb=1):
         super(Appr, self).__init__(model, device, nepochs, lr, lr_min, lr_factor, lr_patience, clipgrad, momentum, wd,
                                    multi_softmax, wu_nepochs, wu_lr_factor, fix_bn, eval_on_train, logger,
-                                   exemplars_dataset, erf_approach, rgr_approach)
+                                   exemplars_dataset, erf_approach, rgr_approach, erf_m, rgr_m, cycle_approach)
         self.model_old = None
         self.lamb = lamb
 
@@ -98,13 +98,11 @@ class Appr(Inc_Learning_Appr):
                 self.exemplar_means.append(cls_feats_mean)
 
     # Algorithm 2: iCaRL Incremental Train
-    def train_loop(self, t, trn_loader, val_loader,tst_loader, distill_approach, memory_loss_use):
+    def train_loop(self, t, trn_loader, val_loader, tst_loader):
         """Contains the epochs loop"""
 
         # remove mean of exemplars during training since Alg. 1 is not used during Alg. 2
         self.exemplar_means = []
-        self.distill = ERF_Distillation(train_epochs = self.nepochs, distill_approach = distill_approach, memory_loss_use = memory_loss_use)
-        self.kd_loss_memory = []
 
         # Algorithm 3: iCaRL Update Representation
         # Alg. 3. "form combined training set", add exemplars to train_loader
@@ -116,7 +114,7 @@ class Appr(Inc_Learning_Appr):
                                                      pin_memory=trn_loader.pin_memory)
 
         # FINETUNING TRAINING -- contains the epochs loop
-        super().train_loop(t, trn_loader, val_loader,tst_loader, distill_approach, memory_loss_use)
+        super().train_loop(t, trn_loader, val_loader,tst_loader)
 
         # EXEMPLAR MANAGEMENT -- select training subset
         # Algorithm 4: iCaRL ConstructExemplarSet and Algorithm 5: iCaRL ReduceExemplarSet
@@ -137,25 +135,50 @@ class Appr(Inc_Learning_Appr):
 
     def train_epoch(self, t, trn_loader, e):
         """Runs a single epoch"""
+        erf_kd_use, rgr_kd_use = self.cycle._get_distill_use(e)
+
+        total_num = 0
+
+        total_total_loss = 0
+        total_train_loss = 0
+        total_kd_loss = 0
+        total_weight = 0
+
         self.model.train()
-        kd, weight, memory_weight = self.distill.loss(e)
         if self.fix_bn and t > 0:
             self.model.freeze_bn()
         for images, targets in trn_loader:
             # Forward old model
             outputs_old = None
-            if t > 0 and kd == True:
+            if t > 0 and erf_kd_use == True:
                 outputs_old = self.model_old(images.to(self.device))
 
             # Forward current model
             outputs = self.model(images.to(self.device))
-            loss = self.criterion(t, outputs, targets.to(self.device), outputs_old, kd = kd, weight = weight, memory_weight = memory_weight)
+            total_loss, train_loss, kd_loss, weight = self.criterion(t, outputs, targets.to(self.device), outputs_old, epoch = e, erf_kd_use = erf_kd_use, rgr_kd_use = rgr_kd_use)
 
             # Backward
             self.optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clipgrad)
             self.optimizer.step()
+
+            #================= Log =================#
+            total_num += 1
+            total_total_loss += total_loss.item()
+            total_train_loss += train_loss.item()
+            if t > 0 and erf_kd_use:
+                total_kd_loss += kd_loss.item()
+                total_weight += weight
+
+        print("| Epoch: ", e + 1, "Loss: ", total_total_loss / total_num, "Train Loss: ", total_train_loss / total_num, "KD Loss: ", total_kd_loss / total_num, "KD Weight: ", total_weight / total_num)
+        # Log wandb task t
+        wandb.log({"epoch": e,
+                "task {} Traing total_loss".format(t): total_total_loss / total_num,
+                "task {} Traing train_loss".format(t): total_train_loss / total_num, 
+                "task {} Traing kd_loss".format(t): total_kd_loss / total_num, 
+                "task {} Traing kd_weight".format(t): total_weight / total_num})
+
 
     def eval(self, t, val_loader):
         """Contains the evaluation code"""
@@ -169,7 +192,7 @@ class Appr(Inc_Learning_Appr):
                     outputs_old = self.model_old(images.to(self.device))
                 # Forward current model
                 outputs, feats = self.model(images.to(self.device), return_features=True)
-                loss = self.criterion(t, outputs, targets.to(self.device), outputs_old)
+                loss,_,_,_ = self.criterion(t, outputs, targets.to(self.device), outputs_old)
                 # during training, the usual accuracy is computed on the outputs
                 if not self.exemplar_means:
                     hits_taw, hits_tag = self.calculate_metrics(outputs, targets)
@@ -183,20 +206,26 @@ class Appr(Inc_Learning_Appr):
         return total_loss / total_num, total_acc_taw / total_num, total_acc_tag / total_num
 
     # Algorithm 3: classification and distillation terms -- original formulation has no trade-off parameter (lamb=1)
-    def criterion(self, t, outputs, targets, outputs_old=None, kd = False, weight = 1, memory_weight = 0):
+    def criterion(self, t, outputs, targets, outputs_old=None, epoch = None, erf_kd_use=False, rgr_kd_use=False):
         """Returns the loss value"""
 
+        total_loss = 0
+        train_loss = 0
+        kd_loss = 0
+        weight = 0
+
         # Classification loss for new classes
-        loss = torch.nn.functional.cross_entropy(torch.cat(outputs, dim=1), targets)
+        train_loss = torch.nn.functional.cross_entropy(torch.cat(outputs, dim=1), targets)
         # Distillation loss for old classes
-        if t > 0 and kd == True:
+        if t > 0 and erf_kd_use == True:
             # The original code does not match with the paper equation, maybe sigmoid could be removed from g
             g = torch.sigmoid(torch.cat(outputs[:t], dim=1))
             q_i = torch.sigmoid(torch.cat(outputs_old[:t], dim=1))
             kd_loss = self.lamb * sum(torch.nn.functional.binary_cross_entropy(g[:, y], q_i[:, y]) for y in
                                     range(sum(self.model.task_cls[:t])))
-            self.kd_loss_memory.append(kd_loss.item())
-            loss += weight * kd_loss
-        elif t > 0 and kd == False and len(self.kd_loss_memory) > 0:
-            loss += memory_weight * self.kd_loss_memory[-1]
-        return loss
+            weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item())
+            kd_loss *= weight * self.lamb
+
+        total_loss = train_loss + kd_loss
+
+        return total_loss, train_loss, kd_loss, weight

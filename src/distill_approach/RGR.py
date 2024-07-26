@@ -1,32 +1,18 @@
 class RGR():
-    def __init__(self, rgr_approach, train_epochs, erf_distill_cycle, ema_alpha = 0.9):
+    def __init__(self, rgr_approach, ema_alpha = 0.9, m = 1):
         self.rgr_approach = rgr_approach
-        self.train_epochs = train_epochs
         self.ema_alpha = ema_alpha
-        self.weight_memory = [1] * self.train_epochs
-        self.rgr_distill_cycle = self._get_rgr_distill_cycle(erf_distill_cycle)
+        self.m = m
         self.ema_gradidents = None
-        self.t = None
+        self.t = 0
 
-    def _get_distill_use(self, epoch):
-        return self.rgr_distill_cycle[epoch]
     
-    def _get_rgr_distill_cycle(self, erf_distill_cycle):
-        """
-        erf distill cycle -> True => rgr distiil cycle -> False
-        erf distill cycle -> False => rgr distill cycle -> True 
-        """
-        if self.rgr_approach == 'none':
-            return [False] * self.train_epochs
-        else:
-            return [not x for x in erf_distill_cycle]
-        
     def _get_ema(self, epoch, model):
         if self.ema_gradidents is not None:
             for name, param in model.named_parameters():
                 if name in self.ema_gradidents.keys():
                     if self.ema_gradidents[name] is not None:
-                        param.grad =  self.ema_gradidents[name] * self._get_distill_weight(epoch)
+                        param.grad =  self.ema_gradidents[name] * self._get_distill_weight(epoch) * self.m
                     else:
                         param.grad = None
         return model
@@ -55,7 +41,13 @@ class RGR():
             self.ema_gradidents = None
             self.t = t
         
-    def _get_distill_weight(self, epoch):
-        return self.weight_memory[epoch]
+    def _get_distill_weight(self, total_loss, kd_loss):
+        if self.rgr_approach == 'adaptive':
+            return self._make_addaptive_distill_weight(total_loss, kd_loss)
+        else:
+            return 1
+
+    def _make_addaptive_distill_weight(self, total_loss, kd_loss):
+        return (kd_loss / total_loss) * self.m
     
     

@@ -98,10 +98,16 @@ def main(argv=None):
                         help='Show train loss and accuracy (default=%(default)s)')
     
     # distill approcah args
-    parser.add_argument('--erf-approach', default='every', type=str, required=False,
+    parser.add_argument('--erf-approach', default='every', type=str,
                         help='ERF Distill approach used (default=%(default)s)')
-    parser.add_argument('--rgr-approach', default='none', type=str, required=False,
+    parser.add_argument('--rgr-approach', default='none', type=str,
                         help='RGR Distill approach used (default=%(default)s)')
+    parser.add_argument('--erf-m', default=1, type=float,
+                        help='ERF Distill m value (default=%(default)s)')
+    parser.add_argument('--rgr-m', default=1, type=float,
+                        help='RGR Distill m value (default=%(default)s)')
+    parser.add_argument('--cycle-approach', default='all', type=str,
+                        help='Distill cycle approcah (default=%(default)s)')
 
     
     # gridsearch args
@@ -115,7 +121,8 @@ def main(argv=None):
                        lr_patience=args.lr_patience, clipgrad=args.clipping, momentum=args.momentum,
                        wd=args.weight_decay, multi_softmax=args.multi_softmax, wu_nepochs=args.warmup_nepochs,
                        wu_lr_factor=args.warmup_lr_factor, fix_bn=args.fix_bn, eval_on_train=args.eval_on_train,
-                       erf_approach = args.erf_approach, rgr_approach = args.rgr_approach)
+                       erf_approach = args.erf_approach, rgr_approach = args.rgr_approach, erf_m = args.erf_m, rgr_m = args.rgr_m, cycle_approach = args.cycle_approach
+                       )
 
     if args.no_cudnn_deterministic:
         print('WARNING: CUDNN Deterministic will be disabled.')
@@ -195,7 +202,7 @@ def main(argv=None):
     ####################################################################################################################
     # Log all arguments
     full_exp_name = reduce((lambda x, y: x[0] + y[0]), args.datasets) if len(args.datasets) > 0 else args.datasets[0]
-    full_exp_name += '_distill:' + args.approach + ' _erf:' + args.erf_approach + ' _rgr:' + args.rgr_approach
+    full_exp_name += '_distill:' + args.approach + ' _erf:' + args.erf_approach + '_erf_m:' + str(args.erf_m) + '_rgr:' + args.rgr_approach + '_rgr_m:' + str(args.rgr_m) + '_cycle:' + args.cycle_approach
     if args.exp_name is not None:
         full_exp_name += '_' + args.exp_name
     logger = MultiLogger(args.results_path, full_exp_name, loggers=args.log, save_models=args.save_models)
@@ -204,7 +211,7 @@ def main(argv=None):
     # wandb
     now = datetime.datetime.now()
     date_time = now.strftime("%Y-%m-%d_%H-%M-%S")
-    wandb.init(project="FACIL", name=full_exp_name+'_'+date_time, config=args)
+    wandb.init(project="FACIL_{}".format(args.approach), name=full_exp_name+'_'+date_time, config=args)
 
     # Loaders
     utils.seed_everything(seed=args.seed)
@@ -300,7 +307,7 @@ def main(argv=None):
             logger.log_scalar(task=t, iter=u, name='forg_taw', group='test', value=100 * forg_taw[t, u])
             logger.log_scalar(task=t, iter=u, name='forg_tag', group='test', value=100 * forg_tag[t, u])
             
-            wandb.log({"task " + str(u) + " loss": test_loss, "task " + str(u) + " acc_taw": 100 * acc_taw[t, u], "task " + str(u) + " acc_tag": 100 * acc_tag[t, u], "task " + str(u) + " forg_taw": 100 * forg_taw[t, u], "task " + str(u) + " forg_tag": 100 * forg_tag[t, u]})
+            #wandb.log({"task " + str(u) + " loss": test_loss, "task " + str(u) + " acc_taw": 100 * acc_taw[t, u], "task " + str(u) + " acc_tag": 100 * acc_tag[t, u], "task " + str(u) + " forg_taw": 100 * forg_taw[t, u], "task " + str(u) + " forg_tag": 100 * forg_tag[t, u]})
         
         # Save
         print('Save at ' + os.path.join(args.results_path, full_exp_name))
@@ -328,10 +335,10 @@ def main(argv=None):
             logger.log_figure(name='bias', iter=t, figure=biases)
             
     # Print Summary
-    wandb.finish()
     utils.print_summary(acc_taw, acc_tag, forg_taw, forg_tag)
     print('[Elapsed time = {:.1f} h]'.format((time.time() - tstart) / (60 * 60)))
     print('Done!')
+    wandb.finish()
 
     return acc_taw, acc_tag, forg_taw, forg_tag, logger.exp_path
     ####################################################################################################################

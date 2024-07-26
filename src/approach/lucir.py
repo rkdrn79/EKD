@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from .incremental_learning import Inc_Learning_Appr
 from datasets.exemplars_dataset import ExemplarsDataset
 
-from distill_approach.ERF import ERF_Distillation
+import wandb
 
 class Appr(Inc_Learning_Appr):
     """Class implementing the Learning a Unified Classifier Incrementally via Rebalancing (LUCI) approach
@@ -23,11 +23,11 @@ class Appr(Inc_Learning_Appr):
     # samples for each old class (e.g. R_per=20) (...) we adopt the first strategy"
     def __init__(self, model, device, nepochs=160, lr=0.1, lr_min=1e-4, lr_factor=10, lr_patience=8, clipgrad=10000,
                  momentum=0.9, wd=5e-4, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False,
-                 eval_on_train=False, logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, lamb=5., lamb_mr=1., dist=0.5, K=2,
+                 eval_on_train=False, logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, erf_m = 1, rgr_m = 1, cycle_approach = 'all', lamb=5., lamb_mr=1., dist=0.5, K=2,
                  remove_less_forget=False, remove_margin_ranking=False, remove_adapt_lamda=False):
         super(Appr, self).__init__(model, device, nepochs, lr, lr_min, lr_factor, lr_patience, clipgrad, momentum, wd,
                                    multi_softmax, wu_nepochs, wu_lr_factor, fix_bn, eval_on_train, logger,
-                                   exemplars_dataset, erf_approach, rgr_approach)
+                                   exemplars_dataset, erf_approach, rgr_approach, erf_m, rgr_m, cycle_approach)
         
         self.lamb = lamb
         self.lamb_mr = lamb_mr
@@ -118,9 +118,8 @@ class Appr(Inc_Learning_Appr):
         # However, this is not mentioned in the paper and doesn't seem to make a significant difference.
         super().pre_train_process(t, trn_loader)
 
-    def train_loop(self, t, trn_loader, val_loader,tst_loader, distill_approach):
+    def train_loop(self, t, trn_loader, val_loader,tst_loader):
         """Contains the epochs loop"""
-        self.distill = Distillation(train_epochs=self.nepochs, distill_approach=distill_approach)
         # add exemplars to train_loader
         if len(self.exemplars_dataset) > 0 and t > 0:
             trn_loader = torch.utils.data.DataLoader(trn_loader.dataset + self.exemplars_dataset,
@@ -130,7 +129,7 @@ class Appr(Inc_Learning_Appr):
                                                      pin_memory=trn_loader.pin_memory)
 
         # FINETUNING TRAINING -- contains the epochs loop
-        super().train_loop(t, trn_loader, val_loader,tst_loader, distill_approach)
+        super().train_loop(t, trn_loader, val_loader,tst_loader)
 
         # EXEMPLAR MANAGEMENT -- select training subset
         self.exemplars_dataset.collect_exemplars(self.model, trn_loader, val_loader.dataset.transform)
@@ -146,34 +145,68 @@ class Appr(Inc_Learning_Appr):
 
     def train_epoch(self, t, trn_loader, e):
         """Runs a single epoch"""
+        erf_kd_use, rgr_kd_use = self.cycle._get_distill_use(e)
+
+        total_num = 0
+
+        total_total_loss = 0
+        total_train_loss = 0
+        total_kd_loss = 0
+        total_weight = 0
+
         self.model.train()
         if self.fix_bn and t > 0:
             self.model.freeze_bn()
         for images, targets in trn_loader:
             images, targets = images.to(self.device), targets.to(self.device)
+
             # Forward current model
             outputs, features = self.model(images, return_features=True)
+
             # Forward previous model
             ref_outputs = None
             ref_features = None
-            if t > 0:
+            if t > 0 and erf_kd_use:
                 ref_outputs, ref_features = self.ref_model(images, return_features=True)
-            kd, weight = self.distill.loss(e)
-            loss = self.criterion(t, outputs, targets, ref_outputs, features, ref_features, kd = kd, weight = weight)
+            total_loss, train_loss, kd_loss, weight = self.criterion(t, outputs, targets, ref_outputs, features, ref_features, epoch = e, erf_kd_use = erf_kd_use, rgr_kd_use = rgr_kd_use)
+
             # Backward
             self.optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             self.optimizer.step()
 
-    def criterion(self, t, outputs, targets, ref_outputs=None, features=None, ref_features=None, kd = False, weight = 1):
+            #================= Log =================#
+            total_num += 1
+            total_total_loss += total_loss.item()
+            total_train_loss += train_loss.item()
+            if t > 0 and erf_kd_use:
+                total_kd_loss += kd_loss.item()
+                total_weight += weight
+
+        print("| Epoch: ", e + 1, "Loss: ", total_total_loss / total_num, "Train Loss: ", total_train_loss / total_num, "KD Loss: ", total_kd_loss / total_num, "KD Weight: ", total_weight / total_num)
+        # Log wandb task t
+        wandb.log({"epoch": e,
+                "task {} Traing total_loss".format(t): total_total_loss / total_num,
+                "task {} Traing train_loss".format(t): total_train_loss / total_num, 
+                "task {} Traing kd_loss".format(t): total_kd_loss / total_num, 
+                "task {} Traing kd_weight".format(t): total_weight / total_num})
+
+    def criterion(self, t, outputs, targets, ref_outputs=None, features=None, ref_features=None, epoch = None, erf_kd_use=False, rgr_kd_use=False):
         """Returns the loss value"""
+        total_loss = 0
+        train_loss = 0
+        kd_loss = 0
+        weight = 0
+
         if ref_outputs is None or ref_features is None:
             if type(outputs[0]) == dict:
                 outputs = torch.cat([o['wsigma'] for o in outputs], dim=1)
             else:
                 outputs = torch.cat(outputs, dim=1)
             # Eq. 1: regular cross entropy
-            loss = nn.CrossEntropyLoss(None)(outputs, targets)
+            train_loss = nn.CrossEntropyLoss(None)(outputs, targets)
+            total_loss = train_loss
+            
         else:
             if self.less_forget:
                 # Eq. 6: Less-Forgetting constraint
@@ -212,14 +245,24 @@ class Appr(Inc_Learning_Appr):
                     # Eq. 8: margin ranking loss
                     loss_mr = nn.MarginRankingLoss(margin=self.dist)(gt_scores.view(-1, 1),
                                                                      max_novel_scores.view(-1, 1),
-                                                                     torch.ones(hard_num * self.K).to(self.device))
+                                                                     torch.ones(hard_num * self.K).view(-1, 1).to(self.device))
                     loss_mr *= self.lamb_mr
 
             # Eq. 1: regular cross entropy
             loss_ce = nn.CrossEntropyLoss()(torch.cat([o['wsigma'] for o in outputs], dim=1), targets)
             # Eq. 9: integrated objective
-            loss = weight * loss_dist + loss_ce + loss_mr
-        return loss
+
+
+            #================= Loss =================#
+            train_loss = loss_ce + loss_mr
+
+            kd_loss = loss_dist
+            weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item())
+            kd_loss *= weight
+
+            total_loss = train_loss + kd_loss
+
+        return total_loss, train_loss, kd_loss, weight
 
     @staticmethod
     def warmup_luci_loss(outputs, targets):
