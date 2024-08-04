@@ -108,6 +108,7 @@ def main(argv=None):
                         help='RGR Distill m value (default=%(default)s)')
     parser.add_argument('--cycle-approach', default='all', type=str,
                         help='Distill cycle approcah (default=%(default)s)')
+    parser.add_argument('--distill-percent', default=0.2, type=float)
 
     
     # gridsearch args
@@ -121,7 +122,7 @@ def main(argv=None):
                        lr_patience=args.lr_patience, clipgrad=args.clipping, momentum=args.momentum,
                        wd=args.weight_decay, multi_softmax=args.multi_softmax, wu_nepochs=args.warmup_nepochs,
                        wu_lr_factor=args.warmup_lr_factor, fix_bn=args.fix_bn, eval_on_train=args.eval_on_train,
-                       erf_approach = args.erf_approach, rgr_approach = args.rgr_approach, erf_m = args.erf_m, rgr_m = args.rgr_m, cycle_approach = args.cycle_approach
+                       erf_approach = args.erf_approach, rgr_approach = args.rgr_approach, erf_m = args.erf_m, rgr_m = args.rgr_m, cycle_approach = args.cycle_approach, distill_percent = args.distill_percent
                        )
 
     if args.no_cudnn_deterministic:
@@ -202,7 +203,7 @@ def main(argv=None):
     ####################################################################################################################
     # Log all arguments
     full_exp_name = reduce((lambda x, y: x[0] + y[0]), args.datasets) if len(args.datasets) > 0 else args.datasets[0]
-    full_exp_name += '_distill:' + args.approach + ' _erf:' + args.erf_approach + '_erf_m:' + str(args.erf_m) + '_rgr:' + args.rgr_approach + '_rgr_m:' + str(args.rgr_m) + '_cycle:' + args.cycle_approach
+    full_exp_name += '_distill:' + args.approach + ' _erf:' + args.erf_approach + '_erf_m:' + str(args.erf_m) + '_rgr:' + args.rgr_approach + '_rgr_m:' + str(args.rgr_m) + '_cycle:' + args.cycle_approach + '_distill_percent:' + str(args.distill_percent)
     if args.exp_name is not None:
         full_exp_name += '_' + args.exp_name
     logger = MultiLogger(args.results_path, full_exp_name, loggers=args.log, save_models=args.save_models)
@@ -287,10 +288,26 @@ def main(argv=None):
 
             print('-' * 108)
 
-        # Train
         appr.train(t, trn_loader[t], val_loader[t], tst_loader)
         print('-' * 108)
+        """     
+        # 만약 t== 0이면 모델을 저장하고, 모델이 저장돼 있으면 학습하는 과정을 뛰어넘음 <--- 코드 추가
+        if t == 0 and os.path.exists("./result/task0_model/{}.pth".format(args.network)):
+            net.load_state_dict(torch.load("./result/task0_model/{}.pth".format(args.network)))
+            print("Load model from ./result/task0_model/{}.pth".format(args.network))
+            print("Skip training task 0")
+            continue
 
+        else:
+            # Train
+            appr.train(t, trn_loader[t], val_loader[t], tst_loader)
+            print('-' * 108)
+
+            ## 저장
+            if not os.path.exists("./result/task0_model"):
+                os.makedirs("./result/task0_model")
+                torch.save(net.state_dict(), "./result/task0_model/{}.pth".format(args.network))
+        """
         # Test
         for u in range(t + 1):
             test_loss, acc_taw[t, u], acc_tag[t, u] = appr.eval(u, tst_loader[u])

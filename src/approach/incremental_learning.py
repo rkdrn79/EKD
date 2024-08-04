@@ -17,7 +17,7 @@ class Inc_Learning_Appr:
     def __init__(self, model, device, nepochs=100, lr=0.05, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
                  momentum=0, wd=0, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False,
                  eval_on_train=False, logger: ExperimentLogger = None, exemplars_dataset: ExemplarsDataset = None,
-                 erf_approach: ERF = None, rgr_approach: RGR = None, erf_m = 1, rgr_m = 1, cycle_approach = 'all'):
+                 erf_approach: ERF = None, rgr_approach: RGR = None, erf_m = 1, rgr_m = 1, cycle_approach = 'all', distill_percent = 0.2):
         self.model = model
         self.device = device
         self.nepochs = nepochs
@@ -42,10 +42,12 @@ class Inc_Learning_Appr:
         self.erf_m = erf_m
         self.rgr_m = rgr_m
         self.cycle_approach = cycle_approach
+        self.distill_percent = distill_percent
+
 
         self.erf = ERF(erf_approach = self.erf_approach, m = self.erf_m)
         self.rgr = RGR(rgr_approach = self.rgr_approach, m = self.rgr_m)
-        self.cycle = CYCLE(cycle_approach = self.cycle_approach, train_epochs = self.nepochs)
+        self.cycle = CYCLE(cycle_approach = self.cycle_approach, train_epochs = self.nepochs, distill_percent = self.distill_percent)
 
     @staticmethod
     def extra_parser(args):

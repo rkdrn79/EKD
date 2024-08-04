@@ -17,10 +17,10 @@ class Appr(Inc_Learning_Appr):
     #  method or the compared Less Forgetting Learning (see Table 2(b))."
     def __init__(self, model, device, nepochs=100, lr=0.05, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
                  momentum=0, wd=0, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False, eval_on_train=False,
-                 logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, erf_m = 1, rgr_m = 1, cycle_approach = 'all', lamb=1, T=2):
+                 logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, erf_m = 1, rgr_m = 1, cycle_approach = 'all', distill_percent = 0.2,  lamb=1, T=2):
         super(Appr, self).__init__(model, device, nepochs, lr, lr_min, lr_factor, lr_patience, clipgrad, momentum, wd,
                                    multi_softmax, wu_nepochs, wu_lr_factor, fix_bn, eval_on_train, logger,
-                                   exemplars_dataset, erf_approach, rgr_approach, erf_m, rgr_m, cycle_approach)
+                                   exemplars_dataset, erf_approach, rgr_approach, erf_m, rgr_m, cycle_approach, distill_percent)
         self.model_old = None
         self.lamb = lamb
         self.T = T

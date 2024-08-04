@@ -1,7 +1,9 @@
 class CYCLE():
-    def __init__(self, cycle_approach, train_epochs = 200):
+    def __init__(self, cycle_approach, train_epochs = 200, distill_percent = 0.6):
         self.cycle_approach = cycle_approach
         self.train_epochs = train_epochs
+        self.distill_percent = distill_percent
+        self.distill_epoch = int(train_epochs * distill_percent)
 
     def _get_distill_use(self, epoch, total_loss = 0, train_loss = 0, kd_loss = 0):
         if self.cycle_approach == 'all':
@@ -10,17 +12,47 @@ class CYCLE():
         elif self.cycle_approach == 'none':
             return False, False
         
-        elif self.cycle_approach == 'first_20':
-            return True,False if epoch < 20 else False, True
+        elif self.cycle_approach == 'first':
+            if epoch < self.distill_epoch :
+                return True, False
+            else:
+                return False, False
     
-        elif self.cycle_approach == 'mid_20':
-            return True, False if epoch >= 90 and epoch < 110 else False, True
-        elif self.cycle_approach == 'end_20':
+        elif self.cycle_approach == 'mid':
+            if epoch >= self.train_epochs // 2 - self.distill_epoch // 2 and epoch < self.train_epochs // 2 + self.distill_epoch // 2:
+                return True, False
+            else:
+                return False, False
 
-            return True, False if epoch >= 180 else False, True
+        elif self.cycle_approach == 'end':
+            if epoch >= self.train_epochs - self.distill_epoch:
+                return True, False
+            else:
+                return False, False
         
-        elif self.cycle_approach == 'every_10':
-            return True, False if epoch % 10 != 0 else False, True
+        elif self.cycle_approach == 'cycle':
+            if self.distill_percent < 0.5:
+                if self.distill_percent == 0.2:
+                    if epoch % 5 == 0:
+                        return True, False
+                    else:
+                        return False, False
+                elif self.distill_percent == 0.4:
+                    if epoch % 5 in [1,3]:
+                        return True, False
+                    else:
+                        return False, False
+            else:
+                if self.distill_percent == 0.8:
+                    if epoch %  5 != 0:
+                        return True, False
+                    else:
+                        return False, False
+                elif self.distill_percent == 0.6:
+                    if epoch % 5 in [0,2,4]:
+                        return True, False
+                    else:
+                        return False, False
         
         elif self.cycle_approach == 'custom':
             return self._make_distill_cycle()[epoch], ~self._make_distill_cycle()[epoch]
