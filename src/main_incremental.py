@@ -162,6 +162,7 @@ def main(argv=None):
         net = getattr(importlib.import_module(name='networks'), args.network)
         # WARNING: fixed to pretrained False for other model (non-torchvision)
         init_model = net(pretrained=False)
+   
 
     # Args -- Continual Learning Approach
     from approach.incremental_learning import Inc_Learning_Appr
@@ -203,7 +204,7 @@ def main(argv=None):
     ####################################################################################################################
     # Log all arguments
     full_exp_name = reduce((lambda x, y: x[0] + y[0]), args.datasets) if len(args.datasets) > 0 else args.datasets[0]
-    full_exp_name += '_distill:' + args.approach + ' _erf:' + args.erf_approach + '_erf_m:' + str(args.erf_m) + '_rgr:' + args.rgr_approach + '_rgr_m:' + str(args.rgr_m) + '_cycle:' + args.cycle_approach + '_distill_percent:' + str(args.distill_percent)
+    full_exp_name += '/distill:' + args.approach + ' /erf:' + args.erf_approach + '/erf_m:' + str(args.erf_m) + '/rgr:' + args.rgr_approach + '/rgr_m:' + str(args.rgr_m) + '/cycle:' + args.cycle_approach + '/distill_percent:' + str(args.distill_percent)
     if args.exp_name is not None:
         full_exp_name += '_' + args.exp_name
     logger = MultiLogger(args.results_path, full_exp_name, loggers=args.log, save_models=args.save_models)
@@ -212,7 +213,8 @@ def main(argv=None):
     # wandb
     now = datetime.datetime.now()
     date_time = now.strftime("%Y-%m-%d_%H-%M-%S")
-    wandb.init(project="FACIL_{}".format(args.approach), name=full_exp_name+'_'+date_time, config=args)
+    wandb.init(project = 'debug')
+    #wandb.init(project="FACIL_{}_final".format(args.approach), name=full_exp_name+'_'+date_time, config=args)
 
     # Loaders
     utils.seed_everything(seed=args.seed)
@@ -224,9 +226,11 @@ def main(argv=None):
         tst_loader = val_loader
     max_task = len(taskcla) if args.stop_at_task == 0 else args.stop_at_task
 
+
     # Network and Approach instances
     utils.seed_everything(seed=args.seed)
     net = LLL_Net(init_model, remove_existing_head=not args.keep_existing_head)
+
     utils.seed_everything(seed=args.seed)
     # taking transformations and class indices from first train dataset
     first_train_ds = trn_loader[0].dataset
@@ -265,6 +269,8 @@ def main(argv=None):
         net.add_head(taskcla[t][1])
         net.to(device)
 
+        # -> 이떄 모델 불러오기
+
         # GridSearch
         if t < args.gridsearch_tasks:
 
@@ -288,29 +294,14 @@ def main(argv=None):
 
             print('-' * 108)
 
+
         appr.train(t, trn_loader[t], val_loader[t], tst_loader)
+
         print('-' * 108)
-        """     
-        # 만약 t== 0이면 모델을 저장하고, 모델이 저장돼 있으면 학습하는 과정을 뛰어넘음 <--- 코드 추가
-        if t == 0 and os.path.exists("./result/task0_model/{}.pth".format(args.network)):
-            net.load_state_dict(torch.load("./result/task0_model/{}.pth".format(args.network)))
-            print("Load model from ./result/task0_model/{}.pth".format(args.network))
-            print("Skip training task 0")
-            continue
 
-        else:
-            # Train
-            appr.train(t, trn_loader[t], val_loader[t], tst_loader)
-            print('-' * 108)
-
-            ## 저장
-            if not os.path.exists("./result/task0_model"):
-                os.makedirs("./result/task0_model")
-                torch.save(net.state_dict(), "./result/task0_model/{}.pth".format(args.network))
-        """
         # Test
         for u in range(t + 1):
-            test_loss, acc_taw[t, u], acc_tag[t, u] = appr.eval(u, tst_loader[u])
+            test_loss,_,_,acc_taw[t, u], acc_tag[t, u] = appr.eval(u, tst_loader[u])
             if u < t:
                 forg_taw[t, u] = acc_taw[:t, u].max(0) - acc_taw[t, u]
                 forg_tag[t, u] = acc_tag[:t, u].max(0) - acc_tag[t, u]

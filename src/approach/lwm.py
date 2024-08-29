@@ -234,7 +234,7 @@ class Appr(Inc_Learning_Appr):
             train_loss = torch.nn.functional.cross_entropy(outputs[t], targets - self.model.task_offset[t])
 
         if t > 0 and erf_kd_use:    
-            weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item())
+            weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item(),self.distill_percent,self.nepochs, self.cycle_approach)
             kd_loss *= weight
 
         total_loss = train_loss + kd_loss

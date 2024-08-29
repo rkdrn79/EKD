@@ -223,7 +223,7 @@ class Appr(Inc_Learning_Appr):
             q_i = torch.sigmoid(torch.cat(outputs_old[:t], dim=1))
             kd_loss = self.lamb * sum(torch.nn.functional.binary_cross_entropy(g[:, y], q_i[:, y]) for y in
                                     range(sum(self.model.task_cls[:t])))
-            weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item())
+            weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item(),self.distill_percent,self.nepochs, self.cycle_approach)
             kd_loss *= weight * self.lamb
 
         total_loss = train_loss + kd_loss

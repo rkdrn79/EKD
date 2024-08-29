@@ -4,6 +4,14 @@ class CYCLE():
         self.train_epochs = train_epochs
         self.distill_percent = distill_percent
         self.distill_epoch = int(train_epochs * distill_percent)
+        
+        # distill 10 epochs / gap / distill 10 epochs
+        if self.cycle_approach == 'ten_to_ten':
+            self.n_gap = self.distill_epoch // 10
+            self.gap = int(self.train_epochs * (1 - self.distill_percent) / self.n_gap)
+            self.ten_to_ten_list = []
+            for point in range(0,200, 10+ self.gap):
+                self.ten_to_ten_list.extend(range(point, point+10))
 
     def _get_distill_use(self, epoch, total_loss = 0, train_loss = 0, kd_loss = 0):
         if self.cycle_approach == 'all':
@@ -26,6 +34,18 @@ class CYCLE():
 
         elif self.cycle_approach == 'end':
             if epoch >= self.train_epochs - self.distill_epoch:
+                return True, False
+            else:
+                return False, False
+        
+        elif self.cycle_approach == 'first_end':
+            if (epoch < self.distill_epoch // 2) or (epoch>= self.train_epochs - self.distill_epoch//2):
+                return True, False
+            else:
+                return False, False
+        
+        elif self.cycle_approach == 'ten_to_ten':
+            if epoch in self.ten_to_ten_list:
                 return True, False
             else:
                 return False, False

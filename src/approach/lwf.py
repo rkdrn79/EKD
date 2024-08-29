@@ -106,6 +106,12 @@ class Appr(Inc_Learning_Appr):
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clipgrad)
             self.optimizer.step()
+            
+            if 'adaptive' in self.erf_approach and t > 0:
+                if erf_kd_use:
+                    self.erf._save_distill_weight(total_loss = total_loss.item(), train_loss = train_loss.item(), kd_loss = kd_loss.item(), epoch = e)
+                else:
+                    self.erf._save_distill_weight(total_loss = total_loss.item(), train_loss = train_loss.item(), epoch = e)
 
             #================= Log =================#
             total_num += 1
@@ -126,7 +132,7 @@ class Appr(Inc_Learning_Appr):
     def eval(self, t, val_loader):
         """Contains the evaluation code"""
         with torch.no_grad():
-            total_loss, total_acc_taw, total_acc_tag, total_num = 0, 0, 0, 0
+            total_loss, train_loss, kd_loss, total_acc_taw, total_acc_tag, total_num = 0, 0, 0, 0, 0, 0
             self.model.eval()
             for images, targets in val_loader:
                 # Forward old model
@@ -135,15 +141,18 @@ class Appr(Inc_Learning_Appr):
                     targets_old = self.model_old(images.to(self.device))
                 # Forward current model
                 outputs = self.model(images.to(self.device))
-                loss,_,_,_ = self.criterion(t, outputs, targets.to(self.device), targets_old)
+                total_l, train_l, kd_l,_ = self.criterion(t, outputs, targets.to(self.device), targets_old, epoch = 0, erf_kd_use = True)
                 hits_taw, hits_tag = self.calculate_metrics(outputs, targets)
                 # Log
-                total_loss += loss.item() * len(targets)
+                total_loss += total_l.item() * len(targets)
+                train_loss += train_l.item() * len(targets)
+                if t > 0:   
+                    kd_loss += kd_l.item() * len(targets)
                 total_acc_taw += hits_taw.sum().data.cpu().numpy().item()
                 total_acc_tag += hits_tag.sum().data.cpu().numpy().item()
                 total_num += len(targets)
 
-        return total_loss / total_num, total_acc_taw / total_num, total_acc_tag / total_num
+        return total_loss / total_num, train_loss/total_num, kd_loss/total_num , total_acc_taw / total_num, total_acc_tag / total_num
     
     def cross_entropy(self, outputs, targets, exp=1.0, size_average=True, eps=1e-5):
         """Calculates cross-entropy with temperature scaling"""
@@ -179,12 +188,14 @@ class Appr(Inc_Learning_Appr):
         if t > 0 and erf_kd_use:
             kd_loss = self.cross_entropy(torch.cat(outputs[:t], dim=1),
                                                 torch.cat(outputs_old[:t], dim=1), exp=1.0 / self.T)
-            weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item())
-            kd_loss *= weight * self.lamb
+            if 'adaptive' in self.erf_approach:
+                weight = self.erf._get_distill_weight(epoch)
+            else:
+                weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item(),self.distill_percent,self.nepochs, self.cycle_approach)
 
         if t > 0 and rgr_kd_use:
             self.model = self.rgr._get_ema(epoch, self.model)
-        total_loss = train_loss + kd_loss
+        total_loss = train_loss + weight * self.lamb * kd_loss
 
         return total_loss, train_loss, kd_loss, weight
 

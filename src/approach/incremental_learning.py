@@ -8,8 +8,10 @@ from datasets.exemplars_dataset import ExemplarsDataset
 from distill_approach.ERF import ERF
 from distill_approach.RGR import RGR
 from distill_approach.CYCLE import CYCLE
+from distill_approach.AKD import AKD
 
 import wandb
+import os
 
 class Inc_Learning_Appr:
     """Basic class for implementing incremental learning approaches"""
@@ -44,8 +46,10 @@ class Inc_Learning_Appr:
         self.cycle_approach = cycle_approach
         self.distill_percent = distill_percent
 
-
-        self.erf = ERF(erf_approach = self.erf_approach, m = self.erf_m)
+        if 'adaptive' in self.erf_approach:
+            self.erf = AKD(akd_approach = self.erf_approach, total_epochs = self.nepochs, m = self.erf_m)
+        else:
+            self.erf = ERF(erf_approach = self.erf_approach, m = self.erf_m)
         self.rgr = RGR(rgr_approach = self.rgr_approach, m = self.rgr_m)
         self.cycle = CYCLE(cycle_approach = self.cycle_approach, train_epochs = self.nepochs, distill_percent = self.distill_percent)
 
@@ -69,6 +73,18 @@ class Inc_Learning_Appr:
     def train(self, t, trn_loader, val_loader, tst_loader):
         """Main train structure"""
         self.pre_train_process(t, trn_loader)
+
+        """
+        network = "resnet32" # < -- Change this to the network name
+        if os.path.exists("./result/task0_model/{}.pth".format(network)) and t == 0:
+            self.model.load_state_dict(torch.load("./result/task0_model/{}.pth".format(network)),strict = False)
+            print("Load model from ./result/task0_model/{}.pth".format(network))
+            print("Skip training task 0")
+        else:
+            self.train_loop(t, trn_loader, val_loader, tst_loader)
+            torch.save(self.model.state_dict(), "./result/task0_model/{}.pth".format(network))
+            
+        """
         self.train_loop(t, trn_loader, val_loader, tst_loader)
         self.post_train_process(t, trn_loader)
 
@@ -119,6 +135,9 @@ class Inc_Learning_Appr:
         best_model = self.model.get_copy()
         self.optimizer = self._get_optimizer()
         self.rgr._reset_eam(t)
+        
+        if 'adaptive' in self.erf_approach:
+            self.erf._reset_save(t)
 
         # Loop epochs
         for e in range(self.nepochs):
@@ -126,9 +145,14 @@ class Inc_Learning_Appr:
             clock0 = time.time()
             self.train_epoch(t, trn_loader, e)
             clock1 = time.time()
+            
+            # Adaptive method plus save the distill weight
+            if 'adaptive' in self.erf_approach:
+                valid_total_loss, valid_train_loss, valid_kd_loss, valid_tag_acc, valid_taw_acc = self.eval(t, val_loader)
+                self.erf._save_distill_weight(valid_total_loss = valid_total_loss, valid_train_loss = valid_train_loss, valid_kd_loss = valid_kd_loss, valid_taw_accuracie = valid_taw_acc, valid_tag_accuracies = valid_tag_acc, epoch = e)
 
             if self.eval_on_train:
-                total_loss, train_acc, _ = self.eval(t, trn_loader)
+                total_loss, _, _, train_acc, _ = self.eval(t, trn_loader)
                 clock2 = time.time()
 
                 erf_kd_use, rgr_kd_use = self.cycle._get_distill_use(e)
@@ -151,7 +175,7 @@ class Inc_Learning_Appr:
 
             # Valid
             clock3 = time.time()
-            valid_loss, valid_acc, _ = self.eval(t, val_loader)
+            valid_loss,_,_,valid_acc, _ = self.eval(t, val_loader)
             clock4 = time.time()
             print(' Valid: time={:5.1f}s loss={:.3f}, TAw acc={:5.1f}% |'.format(
                 clock4 - clock3, valid_loss, 100 * valid_acc))
@@ -164,7 +188,7 @@ class Inc_Learning_Appr:
             if self.eval_on_train and t > 0:
                 # Test
                 for u in range(t):
-                    test_loss, test_acc_taw, test_acc_tag = self.eval(u, tst_loader[u])
+                    test_loss,_,_, test_acc_taw, test_acc_tag = self.eval(u, tst_loader[u])
                     print('| Epoch : {}, train task {}, test_acc_taw {}, test_acc_tag {}'.format(e+1, u, test_acc_taw, test_acc_tag))
                     wandb.log({"epoch" : e ,
                         "train "+str(t)+" task"+ str(u) +" test_acc_taw": test_acc_taw, 
