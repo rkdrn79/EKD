@@ -10,19 +10,27 @@ from .incremental_learning import Inc_Learning_Appr
 from datasets.exemplars_dataset import ExemplarsDataset
 
 import wandb
+import numpy as np
+import time
 
 class Appr(Inc_Learning_Appr):
     """Class implementing the Learning without Memorizing (LwM) approach
     described in http://arxiv.org/abs/1811.08051
     """
 
-    def __init__(self, model, device, nepochs=100, lr=0.05, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
-                 momentum=0, wd=0, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False, eval_on_train=False,
-                 logger=None, exemplars_dataset=None, erf_approach = None, rgr_approach = None, erf_m = 1, rgr_m = 1, cycle_approach = 'all', distill_percent = 0.2,
+    def __init__(self, model, device, nepochs=200, lr=0.05, lr_min=1e-4, lr_factor=3, lr_patience=5, clipgrad=10000,
+                 momentum=0, wd=0, multi_softmax=False, wu_nepochs=0, wu_lr_factor=1, fix_bn=False, eval_on_train=False, #load_model0=True,
+                 logger=None, exemplars_dataset=None, T=2, lamb=1,
+                 dkd_control = 'deterministic', dkd_switch = 'all',dkd_shape='one',dkd_m=1.0,distill_percent=0.2,
+                 ikr_control = 'none', pk_approach='average',ikr_switch='all',ikr_m=1.0,recycle_percent=0.8,
                  beta=1.0, gamma=1.0, gradcam_layer='layer3', log_gradcam_samples=0):
         super(Appr, self).__init__(model, device, nepochs, lr, lr_min, lr_factor, lr_patience, clipgrad, momentum, wd,
-                                   multi_softmax, wu_nepochs, wu_lr_factor, fix_bn, eval_on_train, logger,
-                                   exemplars_dataset, erf_approach, rgr_approach, erf_m, rgr_m, cycle_approach, distill_percent)
+                                   multi_softmax, wu_nepochs, wu_lr_factor, fix_bn, eval_on_train,  logger, exemplars_dataset, #load_model0,
+                                   dkd_control,dkd_switch,dkd_shape,dkd_m,distill_percent,
+                                   ikr_control,pk_approach,ikr_switch,ikr_m,recycle_percent)
+        self.lamb = lamb
+        self.T = T
+        
         self.beta = beta
         self.gamma = gamma
         self.gradcam_layer = gradcam_layer
@@ -30,6 +38,11 @@ class Appr(Inc_Learning_Appr):
         self.model_old = None
         self._samples_to_log_X = []
         self._samples_to_log_y = []
+
+        self.dkd_switch_array_update=[0]*self.nepochs
+        self.dkd_cnt = 0
+        self.dkd_time = 0
+        self.remaining_time = 0
 
     @staticmethod
     def exemplars_dataset_class():
@@ -111,20 +124,38 @@ class Appr(Inc_Learning_Appr):
             self._save_gradcam_examples(t, trn_loader)
 
     def train_epoch(self, t, trn_loader, e):
+        start_time = time.time()
+        self.dkd.current_task = t
         """Runs a single epoch"""
-        erf_kd_use, rgr_kd_use = self.cycle._get_distill_use(e)
+        # erf_kd_use, rgr_kd_use = self.cycle._get_distill_use(e)
+
+        dkd_activation = self.dkd._switch_function(e)
+        self.dkd_switch_array_update[e] = dkd_activation
+
+        if self.ikr_control == 'deterministic':
+            if self.dkd_control == 'adaptive':
+                self.ikr._dkd_adaptive_update(self.dkd.nai_s,self.dkd.ndi_s,self.dkd.Ni_s,self.dkd.li_s,self.dkd.gi_s,self.dkd.thresholds,
+                                            self.dkd_switch_array_update)
+            ikr_activation = self.ikr._switch_function(e, dkd_activation)
+        elif self.ikr_control == 'none':
+            ikr_activation = 0
 
         total_num = 0
 
         total_total_loss = 0
         total_train_loss = 0
         total_kd_loss = 0
-        total_weight = 0
+        # total_weight = 0
+        total_dkd_weight = 0
+        total_ikr_loss = 0
 
         if self.model_old is None:  # First task only
             return super().train_epoch(t, trn_loader, e)
         if self.fix_bn and t > 0:
             self.model.freeze_bn()
+
+        # self.iter_num = len(trn_loader)
+
         # Do training with distillation losses
         with GradCAM(self.model_old, self.gradcam_layer) as gradcam_old:
             for images, targets in trn_loader:
@@ -134,7 +165,7 @@ class Appr(Inc_Learning_Appr):
                 attmap_old = None
                 outputs_old = None
                 attmap = None 
-                if t > 0 and erf_kd_use:
+                if t > 0 and dkd_activation:
                     attmap_old, outputs_old = gradcam_old(images, return_outputs=True)
                     with GradCAM(self.model, self.gradcam_layer) as gradcam:
                         attmap = gradcam(images)  # this use eval() pass
@@ -142,7 +173,7 @@ class Appr(Inc_Learning_Appr):
                 self.model.zero_grad()
                 self.model.train()
                 outputs = self.model(images)  # this use train() pass
-                total_loss, train_loss, kd_loss, weight = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old, epoch = e, erf_kd_use = erf_kd_use, rgr_kd_use = rgr_kd_use)
+                total_loss, train_loss, kd_loss, weight = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old, epoch = e, dkd_activation = dkd_activation, ikr_activation = ikr_activation)
                 # Backward
                 self.optimizer.zero_grad()
                 total_loss.backward()
@@ -150,45 +181,109 @@ class Appr(Inc_Learning_Appr):
                     self.model.parameters(), self.clipgrad)
                 self.optimizer.step()
 
+           #
+                if t>0 :
+                    total_loss, train_loss, kd_loss = torch.tensor(total_loss),torch.tensor(train_loss),torch.tensor(kd_loss)
+                    self.dkd._save_distill_weight(total_loss = total_loss.item(), train_loss = train_loss.item(), kd_loss = kd_loss.item(), epoch = e, t=t)
+                    if self.ikr_control=='deterministic':
+                        self.ikr._save_distill_weight(total_loss = total_loss.item(), train_loss = train_loss.item(), kd_loss = kd_loss.item(), epoch = e, t=t)#, iter_num = self.iter_num)
+
                 #================= Log =================#
                 total_num += 1
                 total_total_loss += total_loss.item()
                 total_train_loss += train_loss.item()
-                if t > 0 and erf_kd_use:
+                # if t > 0 and erf_kd_use:
+                #     total_kd_loss += kd_loss.item()
+                #     total_weight += weight
+                if t > 0 and dkd_activation:
                     total_kd_loss += kd_loss.item()
-                    total_weight += weight
+                    total_dkd_weight += weight
+                elif t>0 and ikr_activation:
+                    total_ikr_loss += weight
 
-            print("| Epoch: ", e + 1, "Loss: ", total_total_loss / total_num, "Train Loss: ", total_train_loss / total_num, "KD Loss: ", total_kd_loss / total_num, "KD Weight: ", total_weight / total_num)
+            # print("| Epoch: ", e + 1, "Loss: ", total_total_loss / total_num, "Train Loss: ", total_train_loss / total_num, "KD Loss: ", total_kd_loss / total_num, "KD Weight: ", total_weight / total_num)
+            # # Log wandb task t
+            # wandb.log({"epoch": e,
+            #         "task {} Traing total_loss".format(t): total_total_loss / total_num,
+            #         "task {} Traing train_loss".format(t): total_train_loss / total_num, 
+            #         "task {} Traing kd_loss".format(t): total_kd_loss / total_num, 
+            #         "task {} Traing kd_weight".format(t): total_weight / total_num})
+
+
+            print("| Epoch: ", e + 1, 
+                "Loss: ", np.round(total_total_loss / total_num,5), 
+                "Train Loss: ", np.round(total_train_loss / total_num,5), 
+                "KD Loss: ", np.round(total_kd_loss / total_num,5),
+                "DKD Weight: ", np.round(total_dkd_weight / total_num,5),
+                "IKR Loss: ",np.round(total_ikr_loss / total_num,5), 
+            )
             # Log wandb task t
             wandb.log({"epoch": e,
-                    "task {} Traing total_loss".format(t): total_total_loss / total_num,
-                    "task {} Traing train_loss".format(t): total_train_loss / total_num, 
-                    "task {} Traing kd_loss".format(t): total_kd_loss / total_num, 
-                    "task {} Traing kd_weight".format(t): total_weight / total_num})
-
+                    "task {} Traing total_loss".format(t): np.round(total_total_loss / total_num,5),
+                    "task {} Traing train_loss".format(t): np.round(total_train_loss / total_num,5), 
+                    "task {} Traing kd_loss".format(t): np.round(total_kd_loss / total_num,5), 
+                    "task {} Traing dkd_weight".format(t): np.round(total_dkd_weight / total_num,5),
+                    "task {} Traing ikr_loss".format(t): np.round(total_ikr_loss / total_num,5)})
+            
+        end_time = time.time()
+        time_consumed = np.round(end_time-start_time,4)
+        if dkd_activation:
+            self.dkd_time += time_consumed
+            self.dkd_cnt +=1
+        else:
+            self.remaining_time += time_consumed
     def eval(self, t, val_loader):
         """Contains the evaluation code"""
-        if t == 0:
-            return super().eval(t, val_loader)
-        total_loss, total_acc_taw, total_acc_tag, total_num = 0, 0, 0, 0
-        self.model.eval()
-        with GradCAM(self.model, self.gradcam_layer) as gradcam, \
-                GradCAM(self.model_old, self.gradcam_layer) as gradcam_old:
-            for images, targets in val_loader:
-                images = images.to(self.device)
-                # Forward old model
-                attmap_old, outputs_old = gradcam_old(images, return_outputs=True)
-                # Forward current model
-                attmap, outputs = gradcam(images, return_outputs=True)
-                loss,_,_,_ = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old)
-                hits_taw, hits_tag = self.calculate_metrics(outputs, targets)
-                # Log
-                total_loss += loss.item() * len(targets)
-                total_acc_taw += hits_taw.sum().item()
-                total_acc_tag += hits_tag.sum().item()
-                total_num += len(targets)
-        return total_loss / total_num, total_acc_taw / total_num, total_acc_tag / total_num
+        # if t == 0:
+        #     return super().eval(t, val_loader)
 
+        # total_loss, total_acc_taw, total_acc_tag, total_num = 0, 0, 0, 0
+        total_loss, train_loss, kd_loss, total_acc_taw, total_acc_tag, total_num = 0, 0, 0, 0, 0, 0
+        self.model.eval()
+        if t>0:
+            with GradCAM(self.model, self.gradcam_layer) as gradcam, \
+                    GradCAM(self.model_old, self.gradcam_layer) as gradcam_old:
+                for images, targets in val_loader:
+                    images = images.to(self.device)
+                    # Forward old model
+                    attmap_old, outputs_old = gradcam_old(images, return_outputs=True)
+                    # Forward current model
+                    attmap, outputs = gradcam(images, return_outputs=True)
+                    # loss,_,_,_ = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old)
+                    total_l, train_l, kd_l,_ = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old)
+                    hits_taw, hits_tag = self.calculate_metrics(outputs, targets)
+                    # Log
+                    # total_loss += loss.item() * len(targets)
+                    total_l, train_l, kd_l = torch.tensor(total_l), torch.tensor(train_l), torch.tensor(kd_l)
+                    total_loss += total_l.item() * len(targets)
+                    train_loss += train_l.item() * len(targets)
+                    kd_loss += kd_l.item() * len(targets)
+                    total_acc_taw += hits_taw.sum().item()
+                    total_acc_tag += hits_tag.sum().item()
+                    total_num += len(targets)
+
+        else:
+            with GradCAM(self.model, self.gradcam_layer) as gradcam:
+                for images, targets in val_loader:
+                    images = images.to(self.device)
+                    # Forward current model
+                    attmap, outputs = gradcam(images, return_outputs=True)
+                    # loss,_,_,_ = self.criterion(t, outputs, targets.to(self.device), outputs_old, attmap, attmap_old)
+                    total_l, train_l, kd_l,_ = self.criterion(t, outputs, targets.to(self.device), None, attmap, None)
+                    hits_taw, hits_tag = self.calculate_metrics(outputs, targets)
+                    # Log
+                    # total_loss += loss.item() * len(targets)
+                    total_loss += total_l.item() * len(targets)
+                    train_loss += train_l.item() * len(targets)
+                    total_acc_taw += hits_taw.sum().item()
+                    total_acc_tag += hits_tag.sum().item()
+                    total_num += len(targets)
+
+
+        # return total_loss / total_num, total_acc_taw / total_num, total_acc_tag / total_num
+        return total_loss / total_num, train_loss/total_num, kd_loss/total_num , total_acc_taw / total_num, total_acc_tag / total_num
+
+    
     def attention_distillation_loss(self, attention_map1, attention_map2):
         """Calculates the attention distillation loss"""
         attention_map1 = torch.norm(attention_map1, p=2, dim=1)
@@ -211,35 +306,48 @@ class Appr(Inc_Learning_Appr):
             ce = ce.mean()
         return ce
 
-    def criterion(self, t, outputs, targets, outputs_old=None, attmap=None, attmap_old=None, epoch = None, erf_kd_use=False, rgr_kd_use=False):
+    def criterion(self, t, outputs, targets, outputs_old=None, attmap=None, attmap_old=None, epoch = None, dkd_activation=0, ikr_activation=0):
         """Returns the loss value"""
         total_loss = 0
         train_loss = 0
         kd_loss = 0
         weight = 0
+        # loss = 0
 
-        loss = 0
-        if t > 0 and outputs_old is not None and erf_kd_use:
-            # Knowledge distillation loss for all previous tasks
-            kd_loss += self.beta * self.cross_entropy(torch.cat(outputs[:t], dim=1),
-                                                   torch.cat(outputs_old[:t], dim=1), exp=1.0 / 2.0)
-        # Attention Distillation loss
-        if attmap is not None and attmap_old is not None and erf_kd_use:
-            kd_loss += self.gamma * self.attention_distillation_loss(attmap, attmap_old)
-    
         # Current cross-entropy loss -- with exemplars use all heads
         if len(self.exemplars_dataset) > 0:
             train_loss = torch.nn.functional.cross_entropy(torch.cat(outputs, dim=1), targets)
         else:
             train_loss = torch.nn.functional.cross_entropy(outputs[t], targets - self.model.task_offset[t])
 
-        if t > 0 and erf_kd_use:    
-            weight = self.erf._get_distill_weight(epoch, train_loss.item(), kd_loss.item(),self.distill_percent,self.nepochs, self.cycle_approach)
-            kd_loss *= weight
 
-        total_loss = train_loss + kd_loss
+
+
+        if t > 0 and outputs_old is not None and dkd_activation:
+            # Knowledge distillation loss for all previous tasks
+            kd_loss += self.beta * self.cross_entropy(torch.cat(outputs[:t], dim=1),
+                                                   torch.cat(outputs_old[:t], dim=1), exp=1.0 / 2.0)
+        # Attention Distillation loss
+        if attmap is not None and attmap_old is not None and dkd_activation:
+            kd_loss += self.gamma * self.attention_distillation_loss(attmap, attmap_old)
+    
+
+
+        if t > 0 and dkd_activation:    
+            weight = float(self.dkd._get_distill_weight(epoch))
+            total_loss = train_loss + weight * self.lamb * kd_loss
+
+        elif t > 0 and ikr_activation: ## IKR Activation
+            weight = float(self.ikr._get_distill_weight(epoch,dkd_activation))
+            total_loss = train_loss + weight * self.lamb 
+
+        elif t > 0 :
+            total_loss = train_loss
+
+        elif (t==0) or (dkd_activation == 0 and ikr_activation == 0):
+            total_loss = train_loss
+
         return total_loss, train_loss, kd_loss, weight
-
 
 class GradCAM:
     """

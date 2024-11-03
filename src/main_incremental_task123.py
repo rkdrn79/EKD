@@ -5,6 +5,7 @@ import argparse
 import importlib
 import numpy as np
 from functools import reduce
+from copy import deepcopy
 
 import utils
 import approach
@@ -21,8 +22,6 @@ import datetime
 import warnings
 warnings.filterwarnings("ignore")
 
-
-
 def main(argv=None):
     tstart = time.time()
     # Arguments
@@ -31,7 +30,7 @@ def main(argv=None):
     # miscellaneous args
     parser.add_argument('--gpu', type=int, default=0,
                         help='GPU (default=%(default)s)')
-    parser.add_argument('--results-path', type=str, default='exp1_1',
+    parser.add_argument('--results-path', type=str, default='/home/administrator/jupyter/euiseog/projects/urp/Continual_KD_URP/adaptive_lwf/es_trials_v5',
                         help='Results path (default=%(default)s)')
     parser.add_argument('--exp-name', default=None, type=str,
                         help='Experiment name (default=%(default)s)')
@@ -50,7 +49,7 @@ def main(argv=None):
     # dataset args
     parser.add_argument('--datasets', default=['cifar100'], type=str, choices=list(dataset_config.keys()),
                         help='Dataset or datasets used (default=%(default)s)', nargs='+', metavar="DATASET")
-    parser.add_argument('--num-workers', default=4, type=int, required=False,
+    parser.add_argument('--num-workers', default=8, type=int, required=False,
                         help='Number of subprocesses to use for dataloader (default=%(default)s)')
     parser.add_argument('--pin-memory', default=False, type=bool, required=False,
                         help='Copy Tensors into CUDA pinned memory before returning them (default=%(default)s)')
@@ -107,7 +106,7 @@ def main(argv=None):
     # DKD args
     parser.add_argument('--dkd-control', default='deterministic', type=str,
                         help='DKD Control (default=%(default)s)')
-    parser.add_argument('--dkd-m', default=1.0, type=float,
+    parser.add_argument('--dkd-m', default='deterministic', type=float,
                         help='DKD Amplifying Value (default=%(default)s)')
     parser.add_argument('--dkd-switch', default='all', type=str,
                         help='DKD Switch Function (default=%(default)s)')
@@ -118,7 +117,7 @@ def main(argv=None):
     # IKR args
     parser.add_argument('--ikr-control', default='none', type=str,
                         help='IKR Control (default=%(default)s)')
-    parser.add_argument('--ikr-m', default=1.0, type=float,
+    parser.add_argument('--ikr-m', default='deterministic', type=float,
                         help='IKR Amplifying Value (default=%(default)s)')
     parser.add_argument('--ikr-switch', default='all', type=str,
                         help='IKR Switch Function (default=%(default)s)')
@@ -133,14 +132,16 @@ def main(argv=None):
 
     # Args -- Incremental Learning Framework
     args, extra_args = parser.parse_known_args(argv)
-
-    args.results_path = os.path.expanduser('/home/administrator/jupyter/euiseog/projects/urp/Continual_KD_URP/adaptive_lwf/result_folder/'+args.results_path)
+    args.results_path = os.path.expanduser(args.results_path)
     base_kwargs = dict(nepochs=args.nepochs, lr=args.lr, lr_min=args.lr_min, lr_factor=args.lr_factor,
                        lr_patience=args.lr_patience, clipgrad=args.clipping, momentum=args.momentum,
                        wd=args.weight_decay, multi_softmax=args.multi_softmax, wu_nepochs=args.warmup_nepochs,
                        wu_lr_factor=args.warmup_lr_factor, fix_bn=args.fix_bn, eval_on_train=args.eval_on_train,
                        dkd_control = args.dkd_control, dkd_m = args.dkd_m, dkd_switch=args.dkd_switch, dkd_shape   = args.dkd_shape, distill_percent = args.distill_percent,
                        ikr_control = args.ikr_control, ikr_m = args.ikr_m, ikr_switch=args.ikr_switch, pk_approach = args.pk_approach, recycle_percent = args.recycle_percent)
+    #### 삭제
+    torch.cuda.empty_cache()
+    #### 삭제
 
     if args.no_cudnn_deterministic:
         print('WARNING: CUDNN Deterministic will be disabled.')
@@ -232,7 +233,6 @@ def main(argv=None):
     # wandb
     now = datetime.datetime.now()
     date_time = now.strftime("%Y-%m-%d_%H-%M-%S")
-    
     wandb.init(project = args.wandb_project, name=full_exp_name+'_'+date_time, config=args)
     #wandb.init(project="FACIL_{}_final".format(args.approach), name=full_exp_name+'_'+date_time, config=args)
 
@@ -249,6 +249,7 @@ def main(argv=None):
 
     # Network and Approach instances
     utils.seed_everything(seed=args.seed)
+    ## 수정 필요
     net = LLL_Net(init_model, remove_existing_head=not args.keep_existing_head)
 
     utils.seed_everything(seed=args.seed)
@@ -282,11 +283,6 @@ def main(argv=None):
     distillation_percent_bytask = []
 
     for t, (_, ncla) in enumerate(taskcla):
-        
-        appr.dkd_cnt = 0
-        appr.dkd_time = 0
-        appr.remaining_time = 0
-
         # Early stop tasks if flag
         if t >= max_task:
             continue
@@ -294,13 +290,29 @@ def main(argv=None):
         print('*' * 108)
         print('Task {:2d}'.format(t))
         print('*' * 108)
+        # if t==0: ### 되는지 확인 (수정 필요)
+        #     acc_taw = np.zeros((max_task, max_task))
+        #     acc_tag = np.zeros((max_task, max_task))
+        #     forg_taw = np.zeros((max_task, max_task))
+        #     forg_tag = np.zeros((max_task, max_task))
+        #     acc_taw[0,0] = np.loadtxt('/home/administrator/jupyter/euiseog/projects/urp/Continual_KD_URP/task0/task0_training/results/acc_taw-2024-10-17-14-41.txt')[0,0]
+        #     acc_tag[0,0] = np.loadtxt('/home/administrator/jupyter/euiseog/projects/urp/Continual_KD_URP/task0/task0_training/results/acc_tag-2024-10-17-14-41.txt')[0,0]
+        #     forg_taw[0,0] = np.loadtxt('/home/administrator/jupyter/euiseog/projects/urp/Continual_KD_URP/task0/task0_training/results/forg_taw-2024-10-17-14-41.txt')[0,0]
+        #     forg_tag[0,0] = np.loadtxt('/home/administrator/jupyter/euiseog/projects/urp/Continual_KD_URP/task0/task0_training/results/forg_tag-2024-10-17-14-41.txt')[0,0]
+            # try:
+            #     net = torch.load('/home/administrator/jupyter/euiseog/projects/urp/Continual_KD_URP/task0/saved_weights/task0_seed0.pt')
+            #     print(f'############### DEBUGGING : t={t} net loaded ###############')
+            # except:
+            #     net.model = torch.load('/home/administrator/jupyter/euiseog/projects/urp/Continual_KD_URP/task0/saved_weights/task0_seed0.pt')
+            #     print(f'############### DEBUGGING : t={t} net.model loaded ###############')
+            # appr.model_old = deepcopy(net)
+            # appr.model_old.eval()
+            # appr.model_old.freeze_all()
+            # print(f'############### DEBUGGING : t={t} model_old updated ###############')
 
         # Add head for current task
         net.add_head(taskcla[t][1])
         net.to(device)
-
-        # -> 이떄 모델 불러오기
-
         # GridSearch
         if t < args.gridsearch_tasks:
 
@@ -317,25 +329,17 @@ def main(argv=None):
             # Search for best forgetting/intransigence tradeoff -- Stability Decay
             print('Trade-off GridSearch')
             best_tradeoff, tradeoff_name = gridsearch.search_tradeoff(args.approach, appr,
-                                                                      t, trn_loader[t], val_loader[t], best_ft_acc)
+                                                                    t, trn_loader[t], val_loader[t], best_ft_acc)
             # Apply to approach
             if tradeoff_name is not None:
                 setattr(appr, tradeoff_name, best_tradeoff)
 
             print('-' * 108)
 
-
         appr.train(t, trn_loader[t], val_loader[t], tst_loader)
-        
-        ## training time per epoch
-        try:
-            training_times_KD_bytask.append(np.round(appr.dkd_time/appr.dkd_cnt,4))
-        except:
-            training_times_KD_bytask.append(0)
-        try:
-            training_times_noKD_bytask.append(np.round(appr.remaining_time/(args.nepochs-appr.dkd_cnt),4))
-        except:
-            training_times_noKD_bytask.append(0)
+
+        training_times_KD_bytask.append(appr.training_time_with_kd)
+        training_times_noKD_bytask.apppend(appr.training_time_without_kd)
         distillation_percent_bytask.append(appr.total_distill_percentage)
 
         print('-' * 108)
@@ -347,9 +351,9 @@ def main(argv=None):
                 forg_taw[t, u] = acc_taw[:t, u].max(0) - acc_taw[t, u]
                 forg_tag[t, u] = acc_tag[:t, u].max(0) - acc_tag[t, u]
             print('>>> Test on task {:2d} : loss={:.3f} | TAw acc={:5.1f}%, forg={:5.1f}%'
-                  '| TAg acc={:5.1f}%, forg={:5.1f}% <<<'.format(u, test_loss,
-                                                                 100 * acc_taw[t, u], 100 * forg_taw[t, u],
-                                                                 100 * acc_tag[t, u], 100 * forg_tag[t, u]))
+                '| TAg acc={:5.1f}%, forg={:5.1f}% <<<'.format(u, test_loss,
+                                                                100 * acc_taw[t, u], 100 * forg_taw[t, u],
+                                                                100 * acc_tag[t, u], 100 * forg_tag[t, u]))
             logger.log_scalar(task=t, iter=u, name='loss', group='test', value=test_loss)
             logger.log_scalar(task=t, iter=u, name='acc_taw', group='test', value=100 * acc_taw[t, u])
             logger.log_scalar(task=t, iter=u, name='acc_tag', group='test', value=100 * acc_tag[t, u])
@@ -386,17 +390,10 @@ def main(argv=None):
     # Print Summary
     utils.print_summary(acc_taw, acc_tag, forg_taw, forg_tag)
     print('[Elapsed time = {:.1f} h]'.format((time.time() - tstart) / (60 * 60)))
-    print('[Task 0 Training times with KD {} % = {} s]'.format(distillation_percent_bytask[0],training_times_KD_bytask[0]))
-    print('[Task 0 Training times without KD {} % = {} s]'.format(distillation_percent_bytask[0],training_times_noKD_bytask[0]))
-    print('[Task 1 Training times with KD {} % = {} s]'.format(distillation_percent_bytask[1],training_times_KD_bytask[1]))
-    print('[Task 1 Training times without KD {} % = {} s]'.format(distillation_percent_bytask[1],training_times_noKD_bytask[1]))
-    print('[Task 2 Training times with KD {} % = {} s]'.format(distillation_percent_bytask[2],training_times_KD_bytask[2]))
-    print('[Task 2 Training times without KD {} % = {} s]'.format(distillation_percent_bytask[2],training_times_noKD_bytask[2]))
-    print('[Task 3 Training times with KD {} % = {} s]'.format(distillation_percent_bytask[3],training_times_KD_bytask[3]))
-    print('[Task 3 Training times without KD {} % = {} s]'.format(distillation_percent_bytask[3],training_times_noKD_bytask[3]))
-    
-
-
+    print('[Task 0 Training times with KD {} % = {:.2f} h]'.format(distillation_percent_bytask[0],training_times_KD_bytask[0]/(60*60)))
+    print('[Task 1 Training times with KD {} % = {:.2f} h]'.format(distillation_percent_bytask[1],training_times_KD_bytask[1]/(60*60)))
+    print('[Task 2 Training times with KD {} % = {:.2f} h]'.format(distillation_percent_bytask[2],training_times_KD_bytask[2]/(60*60)))
+    print('[Task 3 Training times with KD {} % = {:.2f} h]'.format(distillation_percent_bytask[3],training_times_KD_bytask[3]/(60*60)))
     print('Done!')
     wandb.finish()
 

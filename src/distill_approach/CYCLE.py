@@ -5,6 +5,7 @@ class CYCLE():
         self.distill_percent = distill_percent
         self.distill_epoch = int(train_epochs * distill_percent)
         
+        
         # distill 10 epochs / gap / distill 10 epochs
         if self.cycle_approach == 'ten_to_ten':
             self.n_gap = self.distill_epoch // 10
@@ -80,6 +81,9 @@ class CYCLE():
         elif self.cycle_approach == 'adaptive':
             return self._get_adaptive_cycle(total_loss, train_loss, kd_loss), ~self._get_adaptive_cycle(total_loss, train_loss, kd_loss)
         
+        ### IKR (DKD가 부여되지 않음)
+        elif self.cycle_approach is None:
+            return False, True  ### 수정 필요 (for IKR)
 
     def _get_adaptive_cycle(self, total_loss, train_loss, kd_loss):
         return True, False
