@@ -134,7 +134,7 @@ def main(argv=None):
     # Args -- Incremental Learning Framework
     args, extra_args = parser.parse_known_args(argv)
 
-    args.results_path = os.path.expanduser('/home/administrator/jupyter/euiseog/projects/urp/Continual_KD_URP/adaptive_lwf/result_folder/'+args.results_path)
+    args.results_path = os.path.expanduser('./result_folder/'+args.results_path)
     base_kwargs = dict(nepochs=args.nepochs, lr=args.lr, lr_min=args.lr_min, lr_factor=args.lr_factor,
                        lr_patience=args.lr_patience, clipgrad=args.clipping, momentum=args.momentum,
                        wd=args.weight_decay, multi_softmax=args.multi_softmax, wu_nepochs=args.warmup_nepochs,

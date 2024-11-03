@@ -68,7 +68,7 @@ dataset_config = {
         ]
     },
     'imagenet_32_reduced': {
-        'path': join(_BASE_DATA_PATH, 'ILSVRC12_32'),
+        'path': join(_BASE_DATA_PATH, 'imagenet_32'),
         'resize': None,
         'pad': 4,
         'crop': 32,
