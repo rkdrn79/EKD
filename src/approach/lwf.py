@@ -36,6 +36,7 @@ class Appr(Inc_Learning_Appr):
         self.dkd_time = 0
         self.remaining_time = 0
 
+
     @staticmethod
     def exemplars_dataset_class():
         return ExemplarsDataset
@@ -103,8 +104,13 @@ class Appr(Inc_Learning_Appr):
         
             if self.ikr_control == 'deterministic':
                 if self.dkd_control == 'adaptive':
+                    # print('#### DEBUG:  ikr before update ####')
+                    # print('self.dkd.nai_s:',self.dkd.nai_s)
+                    # print('self.dkd.ndi_s:',self.dkd.ndi_s)
+                    # print('self.dkd.Ni_s:',self.dkd.Ni_s)
                     self.ikr._dkd_adaptive_update(self.dkd.nai_s,self.dkd.ndi_s,self.dkd.Ni_s,self.dkd.li_s,self.dkd.gi_s,self.dkd.thresholds,
                                                 self.dkd_switch_array_update)
+                    # print('#### DEBUG: ikr after update ####')
                 ikr_activation = self.ikr._switch_function(e, dkd_activation)
             elif self.ikr_control == 'none':
                 ikr_activation = 0
@@ -125,7 +131,6 @@ class Appr(Inc_Learning_Appr):
             self.ikr.iter_num = len(trn_loader)
 
         for images, targets in trn_loader:
-
             # Forward old model
             targets_old = None
             if t > 0 and dkd_activation: 
@@ -161,7 +166,7 @@ class Appr(Inc_Learning_Appr):
                 total_kd_loss += kd_loss.item()
                 total_dkd_weight += weight
             elif t>0 and ikr_activation:
-                total_ikr_loss += weight
+                total_ikr_loss += weight.item()
             
         end_time = time.time()
         time_consumed = np.round(end_time-start_time,4)
@@ -170,6 +175,7 @@ class Appr(Inc_Learning_Appr):
             self.dkd_cnt +=1
         else:
             self.remaining_time += time_consumed
+                
 
         print("| Epoch: ", e + 1, 
             "Loss: ", np.round(total_total_loss / total_num,5), 
@@ -243,19 +249,6 @@ class Appr(Inc_Learning_Appr):
         else:
             train_loss += torch.nn.functional.cross_entropy(outputs[t], targets - self.model.task_offset[t])
 
-
-#########################################   수정 중 #################################
-        # if self.load_model0:
-        #     if len(self.exemplars_dataset) > 0:
-        #         train_loss += torch.nn.functional.cross_entropy(torch.cat(outputs, dim=1), targets)
-        #     else:
-        #         train_loss += torch.nn.functional.cross_entropy(outputs[t-1], targets - self.model.task_offset[t-1])
-        # else:
-        #     if len(self.exemplars_dataset) > 0:
-        #         train_loss += torch.nn.functional.cross_entropy(torch.cat(outputs, dim=1), targets)
-        #     else:
-        #         train_loss += torch.nn.functional.cross_entropy(outputs[t], targets - self.model.task_offset[t])
-#########################################   수정 중 #################################
         # Knowledge distillation loss for all previous tasks
         if t>0 : 
             if dkd_activation: ## DKD Activation
@@ -268,8 +261,11 @@ class Appr(Inc_Learning_Appr):
 
             
             elif ikr_activation: ## IKR Activation
-                weight = torch.tensor(self.ikr._get_distill_weight(epoch,dkd_activation))
-                total_loss = train_loss + weight * self.lamb 
+
+                weight = self.ikr._get_distill_weight(epoch,dkd_activation)
+                scaler = torch.sigmoid(torch.tensor(weight, requires_grad=True))
+
+                total_loss = train_loss*(1+scaler)
 
             else: ## no activation
                 total_loss = train_loss
@@ -280,6 +276,3 @@ class Appr(Inc_Learning_Appr):
         train_loss, kd_loss = torch.tensor(train_loss),torch.tensor(kd_loss)
 
         return total_loss, train_loss, kd_loss, weight
-
-
-            
