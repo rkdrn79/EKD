@@ -1,8 +1,9 @@
 import numpy as np
 import pandas as pd
+import torch
 
 class IKR():
-    def __init__(self, pk_approach, ikr_switch, recycle_percent, total_epochs,  dkd_control, dkd_switch, distill_percent, m = 2):
+    def __init__(self, pk_approach, ikr_switch, recycle_percent, total_epochs,  dkd_control, dkd_switch, distill_percent, m):
 
         self.pk_approach      = pk_approach
         self.ikr_switch       = ikr_switch
@@ -30,7 +31,12 @@ class IKR():
         self.iter_num = 0
 
     def _get_distill_weight(self, epoch, dkd_activation):
-        return self.m * self._make_recycling_weight(epoch,dkd_activation)
+        ikr_m_tensor = torch.tensor(self.m,requires_grad =True)
+        # return self.m * self._make_recycling_weight(epoch,dkd_activation)
+        # return ikr_m_tensor * self._make_recycling_weight(epoch, dkd_activation)
+        ikr_m_tensor = torch.tensor(self.m, requires_grad=True)
+        recycling_weight = self._make_recycling_weight(epoch, dkd_activation)
+        return ikr_m_tensor * recycling_weight  # 역전파 그래프에 포함된 weight 반환
     
     def _make_recycling_weight(self,epoch,dkd_activation):
         return self._switch_function(epoch,dkd_activation) * self._pk_function(epoch)
@@ -197,44 +203,56 @@ class IKR():
             self.dkd_switch_arr = [1 if i in self.ten_to_ten_list else 0 for i in range(self.total_epochs)]
 
 
-    # def _decay_weight_function(self,epoch):
-
 
     def _switch_function(self,epoch,dkd_activation):
-        if dkd_activation == 1:
+        if self.current_task ==0:
             return 0
-        # else:
-        #     if self.dkd_control == 'deterministic':
-        #         if self.ikr_switch == 'all':
-        #             return 1
-        #         elif self.ikr_switch == 'last':
-        #             return 0
-        #         elif self.dkd_switch == 'cycle':
-        #             remaining_percentage = 1-self.distill_percent
-        #             ikr_epochs = int(self.recycle_percent*self.total_epochs)
-        #             cnt = 0
-        #             cnt_cycles = self.dkd_switch_arr.copy()
-        #             for i,switch in enumerate(cnt_cycles):
-        #                 if i==0:
-        #                     prev = switch
-        #                     cnt +=1
-        #                 else:
-        #                     if switch:
+        elif dkd_activation == 1:
+            return 0
         else:
-            return 0
+            if self.dkd_control ==  'deterministic':
+                if self.dkd_switch == 'ten_to_ten':
+                    ikr_switch_arr = np.array([0]*50)
 
+                    ikr_switch_arr[13:23]=1
+                    ikr_switch_arr[25:35]=1
+                    ikr_switch_arr[37:47]=1
+
+                    ikr_switch_arr = np.concatenate([ikr_switch_arr,ikr_switch_arr,ikr_switch_arr,ikr_switch_arr])
+                    return ikr_switch_arr[epoch]
+                elif self.dkd_switch == 'cycle':
+                    ikr_switch_arr = [0,1,0,1,1]*40
+                    return ikr_switch_arr[epoch]
+                elif self.dkd_switch == 'first':
+                    ikr_switch_arr = [0]*40+[1]*120+[0]*40
+                    return ikr_switch_arr[epoch]
+                elif self.dkd_switch == 'mid':
+                    ikr_switch_arr = [0]*120+[1]*80
+                    return ikr_switch_arr[epoch]
+                elif self.dkd_switch == 'end':
+                    return 0
+                elif self.dkd_switch == 'first_end':
+                    ikr_switch_arr = [0]*20+[1]*60+[0]*40+[1]*60+[0]*20
+                    return ikr_switch_arr[epoch]
+                
+            elif self.dkd_control ==  'adaptive':
+                ikr_switch_arr =[]
+                for i in range(len(self.ndi_s)):
+                    if self.ndi_s[i]>30:
+                        zero_nums = self.ndi_s[i]-20
+                        num_zero_per_period = int(zero_nums/3)
+                        remaining_zeros = zero_nums%3
+                    else:
+                        zero_nums = self.ndi_s[i]-10
+                        num_zero_per_period = int(zero_nums/2)
+                        remaining_zeros = zero_nums%2
+                        
                     
-        # else:  ## 수정 필요
-        #     if self.dkd_control == 'deterministic':
-        #         if self.ikr_switch =='all':
-        #             return 1
-        #         else:
-        #             if self.dkd_switch =='all':
-        #                 return 0
-        #             elif self.dkd_switch =='last':
-        #                 return 0
-        #             elif self.dkd_switch =='cycle':
-        #                 remaining_percentage = 1-self.distill_percent
-        #                 num_per_cycle = remaining_percentage // self.recycle_percent
-        
+                    
+                    if self.ndi_s[i]>30:
+                        ikr_switch_arr += [0]*self.nai_s[i] + ([0]*num_zero_per_period + [1]*10)*2 + [0]*(num_zero_per_period+remaining_zeros)
+                    else:
+                        ikr_switch_arr += [0]*self.nai_s[i] + ([0]*num_zero_per_period + [1]*10)*1 + [0]*(num_zero_per_period+remaining_zeros)
+                    
+                return ikr_switch_arr[epoch]
             
