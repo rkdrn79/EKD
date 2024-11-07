@@ -1,0 +1,3 @@
+python3 -u src/main_incremental.py --gpu 0 --dataset imagenet_32_reduced --results-path exp1_1 --eval-on-train --batch-size 512 --wandb-project exp1_1_icarl --nepoch 200 --approach icarl --dkd-control deterministic --dkd-m 2.0 --dkd-switch ten_to_ten --dkd-shape one --distill-percent 0.2 --ikr-control none
+
+python3 -u src/main_incremental.py --gpu 0 --dataset imagenet_32_reduced --results-path exp1_1 --eval-on-train --batch-size 512 --wandb-project exp1_1_icarl --nepoch 200 --approach icarl --dkd-control deterministic --dkd-m 1.0 --dkd-switch all --dkd-shape one --distill-percent 1 --ikr-control none
