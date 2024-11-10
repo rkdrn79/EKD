@@ -233,8 +233,8 @@ def main(argv=None):
     now = datetime.datetime.now()
     date_time = now.strftime("%Y-%m-%d_%H-%M-%S")
     
-    # wandb.init(project = args.wandb_project, name=full_exp_name+'_'+date_time, config=args, entity = "johnskku-sungkyunkwan-university")
-    wandb.init(project = "imagenet32_test", name=full_exp_name+'_'+date_time, config=args, entity = "johnskku-sungkyunkwan-university")
+    wandb.init(project = args.wandb_project, name=full_exp_name+'_'+date_time, config=args, entity = "johnskku-sungkyunkwan-university")
+    # wandb.init(project = "imagenet32_test", name=full_exp_name+'_'+date_time, config=args, entity = "johnskku-sungkyunkwan-university")
     #wandb.init(project="FACIL_{}_final".format(args.approach), name=full_exp_name+'_'+date_time, config=args)
 
     # Loaders
