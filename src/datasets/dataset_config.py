@@ -1,6 +1,6 @@
 from os.path import join
 
-_BASE_DATA_PATH = "../data"
+_BASE_DATA_PATH = "/home/work/research/data"
 
 dataset_config = {
     'mnist': {

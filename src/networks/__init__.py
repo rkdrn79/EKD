@@ -3,6 +3,7 @@ from torchvision import models
 from .lenet import LeNet
 from .vggnet import VggNet
 from .resnet32 import resnet32
+from .vit_tiny_16_augreg_224 import Vit_tiny_16_augreg_224, Vit_tiny_4_augreg_32
 
 # available torchvision models
 tvmodels = ['alexnet',
@@ -17,7 +18,7 @@ tvmodels = ['alexnet',
             'wide_resnet50_2', 'wide_resnet101_2'
             ]
 
-allmodels = tvmodels + ['resnet32', 'LeNet', 'VggNet']
+allmodels = tvmodels + ['resnet32', 'LeNet', 'VggNet', 'Vit_tiny_16_augreg_224',"Vit_tiny_4_augreg_32"]
 
 
 def set_tvmodel_head_var(model):
@@ -39,5 +40,6 @@ def set_tvmodel_head_var(model):
         model.head_var = 'fc'
     elif type(model) == models.SqueezeNet:
         model.head_var = 'classifier'
+    
     else:
         raise ModuleNotFoundError
