@@ -1,16 +1,3 @@
 __pycache__
 
-result/*
-
-wandb/*
-
-test_src/*
-
-es_trials/*
-es_trials_v3/*
-es_trials_v4/*
-es_trials_v5/*
-es_results/*
-result_folder/*
-scripts/*
-docs/*
+ignore/*

@@ -1,2 +1,0 @@
-python3 -u src/main_incremental.py --gpu 2 --results-path exp1_1 --eval-on-train --batch-size 128 --wandb-project exp1_1_lwm --nepoch 200 --approach lwm --dkd-control deterministic --dkd-m 1.5 --dkd-switch mid --dkd-shape one --distill-percent 0.6 --ikr-control none
-python3 -u src/main_incremental.py --gpu 2 --results-path exp1_1 --eval-on-train --batch-size 128 --wandb-project exp1_1_lwm --nepoch 200 --approach lwm --dkd-control deterministic --dkd-m 1.5 --dkd-switch end --dkd-shape one --distill-percent 0.6 --ikr-control none
