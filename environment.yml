@@ -1,4 +1,4 @@
-name: FACIL
+name: EKD
 channels:
   - pytorch
   - defaults
