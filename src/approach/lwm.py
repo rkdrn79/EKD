@@ -33,7 +33,7 @@ class Appr(Inc_Learning_Appr):
         
         self.beta = beta
         self.gamma = gamma
-        self.gradcam_layer = gradcam_layer
+        self.gradcam_layer = 'fc'#gradcam_layer
         self.log_gradcam_samples = log_gradcam_samples
         self.model_old = None
         self._samples_to_log_X = []
@@ -288,7 +288,7 @@ class Appr(Inc_Learning_Appr):
         """Calculates the attention distillation loss"""
         attention_map1 = torch.norm(attention_map1, p=2, dim=1)
         attention_map2 = torch.norm(attention_map2, p=2, dim=1)
-        return torch.norm(attention_map2 - attention_map1, p=1, dim=1).sum(dim=1).mean()
+        return torch.norm(attention_map2 - attention_map1, p=1, dim=-1).sum(dim=0).mean() #torch.norm(attention_map2 - attention_map1, p=1, dim=1).sum(dim=1).mean()
 
     def cross_entropy(self, outputs, targets, exp=1.0, size_average=True, eps=1e-5):
         """Calculates cross-entropy with temperature scaling"""
